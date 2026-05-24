@@ -1,9 +1,8 @@
 # Launcher config for v2_with_controllers.py.
-# Loads both PMM Simple controllers (XNO and STRX) and runs them in one process.
+# Loads the BBO peg buy controller (XNO) only.
 script_file_name: v2_with_controllers.py
 controllers_config:
-  - conf_pmm_simple_xno.yml
-  - conf_pmm_simple_strx.yml
+  - conf_bbo_peg_xno.yml
 
 # Optional safety brakes (USDT). Comment out / set null to disable.
 # max_controller_drawdown_quote stops a single controller if its drawdown from peak exceeds this.

@@ -5,10 +5,13 @@ from test.isolated_asyncio_wrapper_test_case import IsolatedAsyncioWrapperTestCa
 from typing import List, Optional, Tuple
 from unittest.mock import AsyncMock, MagicMock
 
+from hummingbot.core.data_type.common import TradeType
 from hummingbot.data_feed.market_data_provider import MarketDataProvider
 from hummingbot.strategy_v2.executors.order_executor.data_types import (
+    ExecutionStrategy,
     OrderExecutorConfig,
 )
+from hummingbot.strategy_v2.models.executor_actions import CreateExecutorAction
 
 from controllers.market_making.bbo_peg_buy import BBOPegBuyConfig, BBOPegBuyController
 
@@ -1032,6 +1035,146 @@ class TestBBOPegBuyLogExternalBidChange(unittest.TestCase):
         )
         log_message = self.log_mock.info.call_args[0][0]
         self.assertNotIn("Decimal", log_message)
+
+
+class TestBBOPegBuyBuildCreateAction(unittest.TestCase):
+    """Direct unit tests for _build_create_action in isolation.
+
+    Verifies the LIMIT_MAKER buy action contract: correct order shape,
+    safety invariants (BUY side, LIMIT_MAKER strategy), amount quantization,
+    and the zero/negative-amount short-circuit.
+    """
+
+    def _make_controller(
+        self,
+        *,
+        quantize_amount_side_effect=None,
+        timestamp: float = 1700000000.0,
+    ) -> BBOPegBuyController:
+        """Builds a controller with quantize_order_amount and time() mocked.
+        Stashes the mocked MDP on self.market_data_provider_mock so tests
+        can assert on call args directly.
+        """
+        config = BBOPegBuyConfig(
+            id="test-controller-id",
+            controller_name="bbo_peg_buy",
+            connector_name="htx",
+            trading_pair="XNO-USDT",
+            total_amount_quote=Decimal("20"),
+            update_interval=0.5,
+        )
+        market_data_provider = MagicMock(spec=MarketDataProvider)
+        market_data_provider.quantize_order_amount.side_effect = (
+            quantize_amount_side_effect or (lambda _c, _p, amount: amount)
+        )
+        market_data_provider.time.return_value = timestamp
+        self.market_data_provider_mock = market_data_provider
+        return BBOPegBuyController(
+            config=config,
+            market_data_provider=market_data_provider,
+            actions_queue=AsyncMock(spec=asyncio.Queue),
+        )
+
+    # --- Happy path: action shape ---
+
+    def test_returns_create_action_when_amount_is_positive(self):
+        controller = self._make_controller()
+        result = controller._build_create_action(target_price=Decimal("0.4381"))
+        self.assertIsInstance(result, CreateExecutorAction)
+
+    def test_action_uses_target_price_as_order_price(self):
+        controller = self._make_controller()
+        result = controller._build_create_action(target_price=Decimal("0.4381"))
+        assert result is not None
+        config = result.executor_config
+        assert isinstance(config, OrderExecutorConfig)
+        self.assertEqual(config.price, Decimal("0.4381"))
+
+    def test_action_uses_connector_and_pair_from_config(self):
+        controller = self._make_controller()
+        result = controller._build_create_action(target_price=Decimal("0.4381"))
+        assert result is not None
+        config = result.executor_config
+        assert isinstance(config, OrderExecutorConfig)
+        self.assertEqual(config.connector_name, "htx")
+        self.assertEqual(config.trading_pair, "XNO-USDT")
+
+    def test_action_controller_id_matches_config_id(self):
+        controller = self._make_controller()
+        result = controller._build_create_action(target_price=Decimal("0.4381"))
+        assert result is not None
+        self.assertEqual(result.controller_id, "test-controller-id")
+
+    def test_action_timestamp_comes_from_market_data_provider_time(self):
+        controller = self._make_controller(timestamp=1700000000.0)
+        result = controller._build_create_action(target_price=Decimal("0.4381"))
+        assert result is not None
+        self.assertEqual(result.executor_config.timestamp, 1700000000.0)
+
+    # --- Safety invariants (critical) ---
+
+    def test_action_uses_buy_side(self):
+        # CRITICAL: this is a buy-only controller. Must NEVER be SELL.
+        controller = self._make_controller()
+        result = controller._build_create_action(target_price=Decimal("0.4381"))
+        assert result is not None
+        config = result.executor_config
+        assert isinstance(config, OrderExecutorConfig)
+        self.assertEqual(config.side, TradeType.BUY)
+
+    def test_action_uses_limit_maker_strategy(self):
+        # CRITICAL: LIMIT_MAKER makes the exchange reject orders that would
+        # cross the spread. Any other strategy (LIMIT, MARKET, TAKER) would
+        # defeat the anti-crossing guard. Must NEVER be anything else.
+        controller = self._make_controller()
+        result = controller._build_create_action(target_price=Decimal("0.4381"))
+        assert result is not None
+        config = result.executor_config
+        assert isinstance(config, OrderExecutorConfig)
+        self.assertEqual(config.execution_strategy, ExecutionStrategy.LIMIT_MAKER)
+
+    # --- Amount math / quantization plumbing ---
+
+    def test_quantize_called_with_quote_divided_by_price(self):
+        # total_amount_quote=20, target_price=0.4381 → 20 / 0.4381.
+        controller = self._make_controller()
+        controller._build_create_action(target_price=Decimal("0.4381"))
+        self.market_data_provider_mock.quantize_order_amount.assert_called_once_with(
+            "htx", "XNO-USDT", Decimal("20") / Decimal("0.4381")
+        )
+
+    def test_amount_is_quantized_value_not_raw_division(self):
+        # If quantize snaps to a different size (e.g., exchange rounds down),
+        # the action must use that snapped amount, not the raw division.
+        controller = self._make_controller(
+            quantize_amount_side_effect=lambda _c, _p, _amount: Decimal("45")
+        )
+        result = controller._build_create_action(target_price=Decimal("0.4381"))
+        assert result is not None
+        config = result.executor_config
+        assert isinstance(config, OrderExecutorConfig)
+        self.assertEqual(config.amount, Decimal("45"))
+
+    # --- Negative / edge cases ---
+
+    def test_returns_none_when_quantized_amount_is_zero(self):
+        # Guard: if exchange snaps amount down to 0 (we're below min order
+        # size), no action should be built. A zero-amount action would be
+        # exchange-rejected.
+        controller = self._make_controller(
+            quantize_amount_side_effect=lambda _c, _p, _amount: Decimal("0")
+        )
+        result = controller._build_create_action(target_price=Decimal("0.4381"))
+        self.assertIsNone(result)
+
+    def test_returns_none_when_quantized_amount_is_negative(self):
+        # Defensive: quantize should never return negative, but the `<= 0`
+        # guard catches this too.
+        controller = self._make_controller(
+            quantize_amount_side_effect=lambda _c, _p, _amount: Decimal("-1")
+        )
+        result = controller._build_create_action(target_price=Decimal("0.4381"))
+        self.assertIsNone(result)
 
 
 if __name__ == "__main__":

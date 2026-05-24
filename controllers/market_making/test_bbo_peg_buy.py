@@ -596,5 +596,128 @@ class TestBBOPegBuyComputeTargetPrice(unittest.TestCase):
         self.assertEqual(result, Decimal("0.4380"))
 
 
+class TestBBOPegBuyWalkBidsForFirstExternal(unittest.TestCase):
+    """Direct unit tests for _walk_bids_for_first_external in isolation.
+
+    The result-finding behavior is also covered indirectly through
+    TestBBOPegBuyExternalBestBid, but the top_levels return contract
+    (size cap at 5, top-down ordering, float-tuple shape) is only
+    tested directly here.
+    """
+
+    # --- Result return value ---
+
+    def test_empty_book_returns_none_result_and_empty_top_levels(self):
+        controller, _ = _make_controller_for_walker(bid_levels=[])
+        result, top_levels = controller._walk_bids_for_first_external({})
+        self.assertIsNone(result)
+        self.assertEqual(top_levels, [])
+
+    def test_single_external_level_returns_top_price(self):
+        controller, _ = _make_controller_for_walker(
+            bid_levels=[(Decimal("0.4380"), Decimal("100"))]
+        )
+        result, _ = controller._walk_bids_for_first_external({})
+        self.assertEqual(result, Decimal("0.4380"))
+
+    def test_returns_none_when_all_levels_fully_ours(self):
+        # 3 levels, all fully ours via my_volume_by_price → no external → None.
+        controller, _ = _make_controller_for_walker(
+            bid_levels=[
+                (Decimal("0.4380"), Decimal("100")),
+                (Decimal("0.4379"), Decimal("50")),
+                (Decimal("0.4378"), Decimal("200")),
+            ]
+        )
+        my_volume = {
+            Decimal("0.4380"): Decimal("100"),
+            Decimal("0.4379"): Decimal("50"),
+            Decimal("0.4378"): Decimal("200"),
+        }
+        result, _ = controller._walk_bids_for_first_external(my_volume)
+        self.assertIsNone(result)
+
+    def test_caps_at_ten_levels_for_result(self):
+        # 11 levels; first 10 fully ours, 11th would be external. The cap
+        # (i >= 10 break) stops the walker BEFORE seeing the 11th → None.
+        bid_levels = [
+            (Decimal(f"0.43{80 - i:02d}"), Decimal("10")) for i in range(10)
+        ]
+        bid_levels.append((Decimal("0.4370"), Decimal("999")))  # 11th, external
+        my_volume = {p: Decimal("10") for p, _ in bid_levels[:10]}
+        controller, _ = _make_controller_for_walker(bid_levels=bid_levels)
+        result, _ = controller._walk_bids_for_first_external(my_volume)
+        self.assertIsNone(result)
+
+    # --- top_levels return contract ---
+
+    def test_top_levels_capped_at_five_when_book_is_larger(self):
+        # 7 levels in book → top_levels exactly 5 (top-5 capture for logging).
+        bid_levels = [
+            (Decimal(f"0.43{80 - i:02d}"), Decimal("100")) for i in range(7)
+        ]
+        controller, _ = _make_controller_for_walker(bid_levels=bid_levels)
+        _, top_levels = controller._walk_bids_for_first_external({})
+        self.assertEqual(len(top_levels), 5)
+
+    def test_top_levels_contains_all_when_book_has_fewer_than_five(self):
+        # 3 levels → all 3 in top_levels (no padding, no truncation).
+        controller, _ = _make_controller_for_walker(
+            bid_levels=[
+                (Decimal("0.4380"), Decimal("100")),
+                (Decimal("0.4379"), Decimal("50")),
+                (Decimal("0.4378"), Decimal("200")),
+            ]
+        )
+        _, top_levels = controller._walk_bids_for_first_external({})
+        self.assertEqual(len(top_levels), 3)
+
+    def test_top_levels_preserves_top_down_order(self):
+        # First entry = top of book, descending from there.
+        controller, _ = _make_controller_for_walker(
+            bid_levels=[
+                (Decimal("0.4380"), Decimal("100")),
+                (Decimal("0.4379"), Decimal("50")),
+                (Decimal("0.4378"), Decimal("200")),
+            ]
+        )
+        _, top_levels = controller._walk_bids_for_first_external({})
+        expected = [
+            (float(Decimal("0.4380")), float(Decimal("100"))),
+            (float(Decimal("0.4379")), float(Decimal("50"))),
+            (float(Decimal("0.4378")), float(Decimal("200"))),
+        ]
+        self.assertEqual(top_levels, expected)
+
+    def test_top_levels_entries_are_float_tuples(self):
+        # Pin the (float, float) shape — important for log message format.
+        controller, _ = _make_controller_for_walker(
+            bid_levels=[(Decimal("0.4380"), Decimal("100"))]
+        )
+        _, top_levels = controller._walk_bids_for_first_external({})
+        self.assertEqual(len(top_levels), 1)
+        price, amount = top_levels[0]
+        self.assertIsInstance(price, float)
+        self.assertIsInstance(amount, float)
+
+    # --- Own-volume interaction ---
+
+    def test_subtracts_own_volume_from_external_amount(self):
+        # Without subtraction, the walker would see 100 > 0 and return 0.4380.
+        # WITH subtraction (100 - 100 = 0, not > 0), it skips the top and
+        # returns 0.4379 instead. That differential outcome is what actually
+        # pins the subtraction contract — equal book/own amounts at top must
+        # cause the walker to drop down.
+        controller, _ = _make_controller_for_walker(
+            bid_levels=[
+                (Decimal("0.4380"), Decimal("100")),
+                (Decimal("0.4379"), Decimal("50")),
+            ]
+        )
+        my_volume = {Decimal("0.4380"): Decimal("100")}
+        result, _ = controller._walk_bids_for_first_external(my_volume)
+        self.assertEqual(result, Decimal("0.4379"))
+
+
 if __name__ == "__main__":
     unittest.main()

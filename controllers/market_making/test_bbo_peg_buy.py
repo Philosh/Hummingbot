@@ -905,5 +905,134 @@ class TestBBOPegBuyComputeOwnVolumeByPrice(unittest.TestCase):
         self.assertEqual(result[Decimal("0.4380")], Decimal("60"))
 
 
+class TestBBOPegBuyLogExternalBidChange(unittest.TestCase):
+    """Direct unit tests for _log_external_bid_change in isolation.
+
+    Pins the change-detection log behavior: when log fires, when it
+    doesn't, cache updates, transitions through None, and the
+    Decimal-to-float conversion in the log payload.
+    """
+
+    def _make_controller(self) -> BBOPegBuyController:
+        """Builds a controller and stashes the log mock on self.log_mock so
+        tests can assert on .info calls without going through the bound
+        controller.logger() method.
+        """
+        config = BBOPegBuyConfig(
+            id="test",
+            controller_name="bbo_peg_buy",
+            connector_name="htx",
+            trading_pair="XNO-USDT",
+            total_amount_quote=Decimal("20"),
+            update_interval=0.5,
+        )
+        market_data_provider = MagicMock(spec=MarketDataProvider)
+        log_mock = MagicMock()
+        controller = BBOPegBuyController(
+            config=config,
+            market_data_provider=market_data_provider,
+            actions_queue=AsyncMock(spec=asyncio.Queue),
+        )
+        setattr(controller, "logger", MagicMock(return_value=log_mock))
+        self.log_mock = log_mock
+        return controller
+
+    # --- Log emission decisions ---
+
+    def test_does_not_log_when_result_equals_cache(self):
+        # The whole point of the change-detection cache — no spam when the
+        # walker keeps picking the same external bid tick after tick.
+        controller = self._make_controller()
+        controller._last_logged_external_best_bid = Decimal("0.4380")
+        controller._log_external_bid_change(
+            result=Decimal("0.4380"),
+            top_levels=[],
+            my_volume_by_price={},
+        )
+        self.log_mock.info.assert_not_called()
+
+    def test_logs_when_result_changes_from_none_to_value(self):
+        # Initial detection — cache starts as None, first walker observation
+        # is a real value. Must fire so the first peg target is auditable.
+        controller = self._make_controller()
+        self.assertIsNone(controller._last_logged_external_best_bid)
+        controller._log_external_bid_change(
+            result=Decimal("0.4380"),
+            top_levels=[(0.4380, 100.0)],
+            my_volume_by_price={},
+        )
+        self.log_mock.info.assert_called_once()
+
+    def test_logs_when_result_changes_from_value_to_none(self):
+        # Critical edge: the book empties (or every level becomes ours).
+        # Must still log the transition — otherwise sudden silence in logs
+        # could hide a serious state change during incident review.
+        controller = self._make_controller()
+        controller._last_logged_external_best_bid = Decimal("0.4380")
+        controller._log_external_bid_change(
+            result=None,
+            top_levels=[],
+            my_volume_by_price={},
+        )
+        self.log_mock.info.assert_called_once()
+
+    def test_logs_when_result_changes_between_two_values(self):
+        # Walker picks a new external bid tick over tick (e.g., a level
+        # ahead of us was hit). Standard transition — must log.
+        controller = self._make_controller()
+        controller._last_logged_external_best_bid = Decimal("0.4380")
+        controller._log_external_bid_change(
+            result=Decimal("0.4379"),
+            top_levels=[],
+            my_volume_by_price={},
+        )
+        self.log_mock.info.assert_called_once()
+
+    # --- Cache update behavior ---
+
+    def test_cache_updates_to_new_result_after_logging(self):
+        controller = self._make_controller()
+        self.assertIsNone(controller._last_logged_external_best_bid)
+        controller._log_external_bid_change(
+            result=Decimal("0.4380"),
+            top_levels=[],
+            my_volume_by_price={},
+        )
+        self.assertEqual(
+            controller._last_logged_external_best_bid, Decimal("0.4380")
+        )
+
+    # --- Log payload format (regression catchers) ---
+
+    def test_log_message_includes_all_diagnostic_fields(self):
+        # Forensic log line must carry all three pieces of state so future
+        # readers can reconstruct what the walker saw.
+        controller = self._make_controller()
+        controller._log_external_bid_change(
+            result=Decimal("0.4380"),
+            top_levels=[(0.4380, 100.0), (0.4379, 50.0)],
+            my_volume_by_price={Decimal("0.4380"): Decimal("30")},
+        )
+        log_message = self.log_mock.info.call_args[0][0]
+        self.assertIn("[bbo_peg]", log_message)
+        self.assertIn("external_best_bid", log_message)
+        self.assertIn("top5_bids", log_message)
+        self.assertIn("my_volume", log_message)
+
+    def test_my_volume_converted_to_float_in_log_message(self):
+        # The function builds {float(k): float(v) ...} before logging.
+        # If someone "simplifies" this by removing the float() calls, the
+        # log shows Decimal repr ("Decimal('0.4380'): Decimal('30')") instead
+        # of friendly floats — ugly and harder to grep. Pin the conversion.
+        controller = self._make_controller()
+        controller._log_external_bid_change(
+            result=Decimal("0.4380"),
+            top_levels=[],
+            my_volume_by_price={Decimal("0.4380"): Decimal("30")},
+        )
+        log_message = self.log_mock.info.call_args[0][0]
+        self.assertNotIn("Decimal", log_message)
+
+
 if __name__ == "__main__":
     unittest.main()

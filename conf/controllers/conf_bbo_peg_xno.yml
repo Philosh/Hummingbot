@@ -9,5 +9,9 @@ trading_pair: XNO-USDT
 # resting order). Order size = this / quoted price.
 total_amount_quote: 20
 
+# Seconds between controller ticks. Lower = faster reaction to book moves,
+# more REST traffic.
+update_interval: 0.5
+
 manual_kill_switch: false
 initial_positions: []

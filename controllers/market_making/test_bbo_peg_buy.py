@@ -1466,5 +1466,177 @@ class TestBBOPegBuyCategorizeActiveOrders(unittest.TestCase):
         self.assertEqual(in_tolerance, [])
 
 
+class TestBBOPegBuyUpdateFillLatch(unittest.TestCase):
+    """Direct unit tests for _update_fill_latch in isolation.
+
+    Pins the one-shot fill detection contract: latch flips to True on any
+    executor reporting executed_amount_base > 0, and NEVER resets within
+    a process lifetime. The latch gates whether the controller emits
+    more buy orders, so the never-reset guarantee is safety-critical.
+    """
+
+    def _make_controller(self) -> BBOPegBuyController:
+        config = BBOPegBuyConfig(
+            id="test",
+            controller_name="bbo_peg_buy",
+            connector_name="htx",
+            trading_pair="XNO-USDT",
+            total_amount_quote=Decimal("20"),
+            update_interval=0.5,
+        )
+        return BBOPegBuyController(
+            config=config,
+            market_data_provider=MagicMock(spec=MarketDataProvider),
+            actions_queue=AsyncMock(spec=asyncio.Queue),
+        )
+
+    def _fake_executor_with_fill(
+        self,
+        *,
+        executed_amount_base=None,
+        custom_info_is_none: bool = False,
+        missing_key: bool = False,
+        is_active: bool = True,
+    ) -> ExecutorInfo:
+        """Builds a fake executor for fill-latch tests.
+
+        - custom_info_is_none=True → executor.custom_info = None
+        - missing_key=True → custom_info = {} (no executed_amount_base key)
+        - otherwise → custom_info = {"executed_amount_base": executed_amount_base}
+        """
+        executor = MagicMock()
+        executor.is_active = is_active
+        if custom_info_is_none:
+            executor.custom_info = None
+        elif missing_key:
+            executor.custom_info = {}
+        else:
+            executor.custom_info = {"executed_amount_base": executed_amount_base}
+        return cast(ExecutorInfo, executor)
+
+    # --- Positive: latch behavior ---
+
+    def test_latch_stays_false_when_no_executors_have_fills(self):
+        controller = self._make_controller()
+        setattr(controller, "executors_info", [
+            self._fake_executor_with_fill(executed_amount_base=Decimal("0")),
+        ])
+        controller._update_fill_latch()
+        self.assertFalse(controller._has_filled)
+
+    def test_latch_flips_to_true_on_executor_with_positive_fill(self):
+        controller = self._make_controller()
+        setattr(controller, "executors_info", [
+            self._fake_executor_with_fill(executed_amount_base=Decimal("5")),
+        ])
+        controller._update_fill_latch()
+        self.assertTrue(controller._has_filled)
+
+    # --- Filter / skip cases ---
+
+    def test_executor_with_none_custom_info_is_skipped(self):
+        # Defensive: if framework hasn't populated custom_info, skip cleanly
+        # rather than crash trying to .get() on None.
+        controller = self._make_controller()
+        setattr(controller, "executors_info", [
+            self._fake_executor_with_fill(custom_info_is_none=True),
+        ])
+        controller._update_fill_latch()
+        self.assertFalse(controller._has_filled)
+
+    def test_executor_with_missing_executed_amount_base_key_is_skipped(self):
+        # custom_info exists but lacks the key → dict.get returns None → skip.
+        controller = self._make_controller()
+        setattr(controller, "executors_info", [
+            self._fake_executor_with_fill(missing_key=True),
+        ])
+        controller._update_fill_latch()
+        self.assertFalse(controller._has_filled)
+
+    def test_executor_with_zero_executed_amount_does_not_flip_latch(self):
+        # Strict > 0 guard: exactly zero must not trip the latch.
+        controller = self._make_controller()
+        setattr(controller, "executors_info", [
+            self._fake_executor_with_fill(executed_amount_base=Decimal("0")),
+        ])
+        controller._update_fill_latch()
+        self.assertFalse(controller._has_filled)
+
+    # --- Multiple executors ---
+
+    def test_latch_flips_when_one_of_many_executors_has_fill(self):
+        # First two have no fill; third does. The loop must continue past the
+        # first negatives and trip the latch on the matching executor.
+        controller = self._make_controller()
+        setattr(controller, "executors_info", [
+            self._fake_executor_with_fill(executed_amount_base=Decimal("0")),
+            self._fake_executor_with_fill(custom_info_is_none=True),
+            self._fake_executor_with_fill(executed_amount_base=Decimal("10")),
+        ])
+        controller._update_fill_latch()
+        self.assertTrue(controller._has_filled)
+
+    # --- Critical: one-shot / never-reset guarantee ---
+
+    def test_latch_stays_true_when_already_set_and_executors_have_no_fills(self):
+        # CRITICAL: the latch must NEVER reset once set. Even if every
+        # executor currently shows zero fills (e.g., the filled one was
+        # cleaned up between ticks), the latch must remember the past fill.
+        # Otherwise the one-shot guarantee breaks and the bot could place
+        # another order after a fill.
+        controller = self._make_controller()
+        controller._has_filled = True
+        setattr(controller, "executors_info", [
+            self._fake_executor_with_fill(executed_amount_base=Decimal("0")),
+            self._fake_executor_with_fill(custom_info_is_none=True),
+        ])
+        controller._update_fill_latch()
+        self.assertTrue(controller._has_filled)
+
+    # --- Defensive / negative cases ---
+
+    def test_negative_executed_amount_does_not_flip_latch(self):
+        # Defensive: executed_amount_base should never be negative, but the
+        # strict > 0 guard catches this case too. If someone replaced > 0
+        # with != 0 (treating any non-zero as a fill), this would catch it.
+        controller = self._make_controller()
+        setattr(controller, "executors_info", [
+            self._fake_executor_with_fill(executed_amount_base=Decimal("-1")),
+        ])
+        controller._update_fill_latch()
+        self.assertFalse(controller._has_filled)
+
+    def test_string_executed_amount_handled_via_decimal_conversion(self):
+        # Custom info may come from JSON deserialization → values are strings.
+        # The Decimal(str(executed)) conversion must handle string input.
+        # If someone "simplifies" this to Decimal(executed) directly, a string
+        # input might fail (in some scenarios) or behave unexpectedly.
+        controller = self._make_controller()
+        setattr(controller, "executors_info", [
+            self._fake_executor_with_fill(executed_amount_base="5.0"),
+        ])
+        controller._update_fill_latch()
+        self.assertTrue(controller._has_filled)
+
+    # --- Contract pin: no is_active filter ---
+
+    def test_inactive_executor_with_fill_still_flips_latch(self):
+        # CONTRACT: unlike _categorize_active_orders, this function does NOT
+        # filter by is_active. An inactive executor that recorded a fill
+        # before being finalized still represents "we had a fill" — the
+        # latch must trip. If a refactor adds is_active filtering here,
+        # fills on cleanly-closed executors would be missed and the bot
+        # would re-quote after a real fill.
+        controller = self._make_controller()
+        setattr(controller, "executors_info", [
+            self._fake_executor_with_fill(
+                executed_amount_base=Decimal("5"),
+                is_active=False,
+            ),
+        ])
+        controller._update_fill_latch()
+        self.assertTrue(controller._has_filled)
+
+
 if __name__ == "__main__":
     unittest.main()

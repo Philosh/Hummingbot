@@ -7,7 +7,7 @@ HTTP polling at the strategy layer.
 """
 
 from decimal import Decimal
-from typing import List, Optional
+from typing import List, Optional, cast
 
 from pydantic import Field
 
@@ -41,6 +41,8 @@ class BBOPegBuyConfig(ControllerConfigBase):
 
 
 class BBOPegBuyController(ControllerBase):
+    config: BBOPegBuyConfig
+
     def __init__(self, config: BBOPegBuyConfig, *args, **kwargs):
         super().__init__(config, *args, **kwargs)
         self.config = config
@@ -79,17 +81,23 @@ class BBOPegBuyController(ControllerBase):
         if target_price is None:
             return []
 
-        tick: Decimal = self.processed_data["tick"]
+        tick = cast(Decimal, self.processed_data["tick"])
         tolerance = Decimal(self.config.requote_tolerance_ticks) * tick
 
         actions: List[ExecutorAction] = []
         active = [e for e in self.executors_info if e.is_active]
 
-        stale = [
-            e
-            for e in active
-            if abs(Decimal(str(e.config.price)) - target_price) > tolerance
-        ]
+        stale = []
+        in_tolerance = []
+        for e in active:
+            cfg = e.config
+            if not isinstance(cfg, OrderExecutorConfig) or cfg.price is None:
+                continue
+            if abs(cfg.price - target_price) > tolerance:
+                stale.append(e)
+            else:
+                in_tolerance.append(e)
+
         for e in stale:
             actions.append(
                 StopExecutorAction(
@@ -98,7 +106,6 @@ class BBOPegBuyController(ControllerBase):
                 )
             )
 
-        in_tolerance = [e for e in active if e not in stale]
         if not in_tolerance:
             amount = self.market_data_provider.quantize_order_amount(
                 self.config.connector_name,

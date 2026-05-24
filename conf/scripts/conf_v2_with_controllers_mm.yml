@@ -1,0 +1,12 @@
+# Launcher config for v2_with_controllers.py.
+# Loads both PMM Simple controllers (XNO and STRX) and runs them in one process.
+script_file_name: v2_with_controllers.py
+controllers_config:
+  - conf_pmm_simple_xno.yml
+  - conf_pmm_simple_strx.yml
+
+# Optional safety brakes (USDT). Comment out / set null to disable.
+# max_controller_drawdown_quote stops a single controller if its drawdown from peak exceeds this.
+# max_global_drawdown_quote stops EVERYTHING if total drawdown from peak exceeds this.
+max_controller_drawdown_quote: null
+max_global_drawdown_quote: null

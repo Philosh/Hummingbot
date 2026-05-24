@@ -1,3 +1,12 @@
 *.yml
 *.json
 .password_verification
+
+# --- TEMPORARY: track active strategy configs so changes show in git ---
+# Remove these negation rules before sharing the repo (configs may contain
+# preferences/keys you don't want committed).
+!controllers/conf_pmm_simple_xno.yml
+!controllers/conf_pmm_simple_strx.yml
+!controllers/conf_bbo_peg_xno.yml
+!scripts/conf_v2_with_controllers_mm.yml
+!strategies/conf_pure_mm_xno_1.yml

@@ -43,9 +43,12 @@ def _fake_executor(
 ) -> MagicMock:
     """Mock ExecutorInfo. If use_order_executor_config is False, cfg is a plain
     MagicMock so isinstance(cfg, OrderExecutorConfig) fails (exercises the
-    defensive filter in _external_best_bid)."""
+    defensive filter in _external_best_bid). custom_info defaults to None
+    so the fill latch treats this as 'no fill recorded' — fill-specific
+    tests should use a custom helper that sets custom_info explicitly."""
     executor = MagicMock()
     executor.is_active = is_active
+    executor.custom_info = None
     cfg = (
         MagicMock(spec=OrderExecutorConfig)
         if use_order_executor_config
@@ -420,11 +423,11 @@ class TestBBOPegBuyExternalBestBid(unittest.TestCase):
         # Boundary: top 10 fully ours, 11th is fully external. The cap
         # (i >= 10 break) MUST prevent the walker from ever seeing level 11.
         # Returns None.
-        bid_levels = [
-            (Decimal(f"0.43{80 - i:02d}"), Decimal("10")) for i in range(10)
-        ]
+        bid_levels = [(Decimal(f"0.43{80 - i:02d}"), Decimal("10")) for i in range(10)]
         bid_levels.append((Decimal("0.4370"), Decimal("999")))  # external, level 11
-        executors = [_fake_executor(price=p, amount=Decimal("10")) for p, _ in bid_levels[:10]]
+        executors = [
+            _fake_executor(price=p, amount=Decimal("10")) for p, _ in bid_levels[:10]
+        ]
         controller, _ = _make_controller_for_walker(
             bid_levels=bid_levels, executors=executors
         )
@@ -459,9 +462,11 @@ class TestBBOPegBuyExternalBestBid(unittest.TestCase):
         )
         # Our own order at the same price expressed as Decimal — must
         # collide with the book's float→str→Decimal value.
-        setattr(controller, "executors_info", [
-            _fake_executor(price=Decimal("0.4380"), amount=Decimal("30"))
-        ])
+        setattr(
+            controller,
+            "executors_info",
+            [_fake_executor(price=Decimal("0.4380"), amount=Decimal("30"))],
+        )
         setattr(controller, "logger", MagicMock(return_value=MagicMock()))
 
         # 100 in book - 30 ours = 70 external → pick top.
@@ -670,9 +675,7 @@ class TestBBOPegBuyWalkBidsForFirstExternal(unittest.TestCase):
     def test_caps_at_ten_levels_for_result(self):
         # 11 levels; first 10 fully ours, 11th would be external. The cap
         # (i >= 10 break) stops the walker BEFORE seeing the 11th → None.
-        bid_levels = [
-            (Decimal(f"0.43{80 - i:02d}"), Decimal("10")) for i in range(10)
-        ]
+        bid_levels = [(Decimal(f"0.43{80 - i:02d}"), Decimal("10")) for i in range(10)]
         bid_levels.append((Decimal("0.4370"), Decimal("999")))  # 11th, external
         my_volume = {p: Decimal("10") for p, _ in bid_levels[:10]}
         controller, _ = _make_controller_for_walker(bid_levels=bid_levels)
@@ -683,9 +686,7 @@ class TestBBOPegBuyWalkBidsForFirstExternal(unittest.TestCase):
 
     def test_top_levels_capped_at_five_when_book_is_larger(self):
         # 7 levels in book → top_levels exactly 5 (top-5 capture for logging).
-        bid_levels = [
-            (Decimal(f"0.43{80 - i:02d}"), Decimal("100")) for i in range(7)
-        ]
+        bid_levels = [(Decimal(f"0.43{80 - i:02d}"), Decimal("100")) for i in range(7)]
         controller, _ = _make_controller_for_walker(bid_levels=bid_levels)
         _, top_levels = controller._walk_bids_for_first_external({})
         self.assertEqual(len(top_levels), 5)
@@ -758,7 +759,7 @@ class TestBBOPegBuyWalkBidsForFirstExternal(unittest.TestCase):
         controller, _ = _make_controller_for_walker(
             bid_levels=[
                 (Decimal("0.4380"), Decimal("100")),  # fully ours
-                (Decimal("0.4379"), Decimal("50")),   # external
+                (Decimal("0.4379"), Decimal("50")),  # external
                 (Decimal("0.4378"), Decimal("200")),  # fully ours
             ]
         )
@@ -1005,9 +1006,7 @@ class TestBBOPegBuyLogExternalBidChange(unittest.TestCase):
             top_levels=[],
             my_volume_by_price={},
         )
-        self.assertEqual(
-            controller._last_logged_external_best_bid, Decimal("0.4380")
-        )
+        self.assertEqual(controller._last_logged_external_best_bid, Decimal("0.4380"))
 
     # --- Log payload format (regression catchers) ---
 
@@ -1313,27 +1312,21 @@ class TestBBOPegBuyCategorizeActiveOrders(unittest.TestCase):
     def test_empty_executors_info_returns_two_empty_lists(self):
         # Edge: no executors at all → ([], []).
         controller, _ = _make_controller_for_walker(executors=[])
-        stale, in_tolerance = controller._categorize_active_orders(
-            Decimal("0.4381")
-        )
+        stale, in_tolerance = controller._categorize_active_orders(Decimal("0.4381"))
         self.assertEqual(stale, [])
         self.assertEqual(in_tolerance, [])
 
     def test_executor_at_target_price_categorized_as_in_tolerance(self):
         executor = _fake_executor(price=Decimal("0.4381"), amount=Decimal("50"))
         controller, _ = _make_controller_for_walker(executors=[executor])
-        stale, in_tolerance = controller._categorize_active_orders(
-            Decimal("0.4381")
-        )
+        stale, in_tolerance = controller._categorize_active_orders(Decimal("0.4381"))
         self.assertEqual(stale, [])
         self.assertEqual(in_tolerance, [executor])
 
     def test_executor_at_different_price_categorized_as_stale(self):
         executor = _fake_executor(price=Decimal("0.4380"), amount=Decimal("50"))
         controller, _ = _make_controller_for_walker(executors=[executor])
-        stale, in_tolerance = controller._categorize_active_orders(
-            Decimal("0.4381")
-        )
+        stale, in_tolerance = controller._categorize_active_orders(Decimal("0.4381"))
         self.assertEqual(stale, [executor])
         self.assertEqual(in_tolerance, [])
 
@@ -1346,9 +1339,7 @@ class TestBBOPegBuyCategorizeActiveOrders(unittest.TestCase):
         controller, _ = _make_controller_for_walker(
             executors=[at_target_1, stale_1, at_target_2, stale_2]
         )
-        stale, in_tolerance = controller._categorize_active_orders(
-            Decimal("0.4381")
-        )
+        stale, in_tolerance = controller._categorize_active_orders(Decimal("0.4381"))
         self.assertEqual(set(in_tolerance), {at_target_1, at_target_2})
         self.assertEqual(set(stale), {stale_1, stale_2})
 
@@ -1362,9 +1353,7 @@ class TestBBOPegBuyCategorizeActiveOrders(unittest.TestCase):
             is_active=False,
         )
         controller, _ = _make_controller_for_walker(executors=[executor])
-        stale, in_tolerance = controller._categorize_active_orders(
-            Decimal("0.4381")
-        )
+        stale, in_tolerance = controller._categorize_active_orders(Decimal("0.4381"))
         self.assertEqual(stale, [])
         self.assertEqual(in_tolerance, [])
 
@@ -1376,9 +1365,7 @@ class TestBBOPegBuyCategorizeActiveOrders(unittest.TestCase):
             use_order_executor_config=False,
         )
         controller, _ = _make_controller_for_walker(executors=[executor])
-        stale, in_tolerance = controller._categorize_active_orders(
-            Decimal("0.4381")
-        )
+        stale, in_tolerance = controller._categorize_active_orders(Decimal("0.4381"))
         self.assertEqual(stale, [])
         self.assertEqual(in_tolerance, [])
 
@@ -1386,9 +1373,7 @@ class TestBBOPegBuyCategorizeActiveOrders(unittest.TestCase):
         # OrderExecutorConfig but price is None — must NOT appear in either.
         executor = _fake_executor(price=None, amount=Decimal("50"))
         controller, _ = _make_controller_for_walker(executors=[executor])
-        stale, in_tolerance = controller._categorize_active_orders(
-            Decimal("0.4381")
-        )
+        stale, in_tolerance = controller._categorize_active_orders(Decimal("0.4381"))
         self.assertEqual(stale, [])
         self.assertEqual(in_tolerance, [])
 
@@ -1405,9 +1390,7 @@ class TestBBOPegBuyCategorizeActiveOrders(unittest.TestCase):
             amount=Decimal("50"),
         )
         controller, _ = _make_controller_for_walker(executors=[executor])
-        stale, in_tolerance = controller._categorize_active_orders(
-            Decimal("0.4381")
-        )
+        stale, in_tolerance = controller._categorize_active_orders(Decimal("0.4381"))
         self.assertEqual(stale, [executor])
         self.assertEqual(in_tolerance, [])
 
@@ -1432,9 +1415,7 @@ class TestBBOPegBuyCategorizeActiveOrders(unittest.TestCase):
         controller, _ = _make_controller_for_walker(
             executors=[inactive, wrong_config, none_price]
         )
-        stale, in_tolerance = controller._categorize_active_orders(
-            Decimal("0.4381")
-        )
+        stale, in_tolerance = controller._categorize_active_orders(Decimal("0.4381"))
         self.assertNotIn(inactive, stale)
         self.assertNotIn(inactive, in_tolerance)
         self.assertNotIn(wrong_config, stale)
@@ -1459,9 +1440,7 @@ class TestBBOPegBuyCategorizeActiveOrders(unittest.TestCase):
                 _fake_executor(price=None, amount=Decimal("50")),
             ]
         )
-        stale, in_tolerance = controller._categorize_active_orders(
-            Decimal("0.4381")
-        )
+        stale, in_tolerance = controller._categorize_active_orders(Decimal("0.4381"))
         self.assertEqual(stale, [])
         self.assertEqual(in_tolerance, [])
 
@@ -1518,17 +1497,25 @@ class TestBBOPegBuyUpdateFillLatch(unittest.TestCase):
 
     def test_latch_stays_false_when_no_executors_have_fills(self):
         controller = self._make_controller()
-        setattr(controller, "executors_info", [
-            self._fake_executor_with_fill(executed_amount_base=Decimal("0")),
-        ])
+        setattr(
+            controller,
+            "executors_info",
+            [
+                self._fake_executor_with_fill(executed_amount_base=Decimal("0")),
+            ],
+        )
         controller._update_fill_latch()
         self.assertFalse(controller._has_filled)
 
     def test_latch_flips_to_true_on_executor_with_positive_fill(self):
         controller = self._make_controller()
-        setattr(controller, "executors_info", [
-            self._fake_executor_with_fill(executed_amount_base=Decimal("5")),
-        ])
+        setattr(
+            controller,
+            "executors_info",
+            [
+                self._fake_executor_with_fill(executed_amount_base=Decimal("5")),
+            ],
+        )
         controller._update_fill_latch()
         self.assertTrue(controller._has_filled)
 
@@ -1538,27 +1525,39 @@ class TestBBOPegBuyUpdateFillLatch(unittest.TestCase):
         # Defensive: if framework hasn't populated custom_info, skip cleanly
         # rather than crash trying to .get() on None.
         controller = self._make_controller()
-        setattr(controller, "executors_info", [
-            self._fake_executor_with_fill(custom_info_is_none=True),
-        ])
+        setattr(
+            controller,
+            "executors_info",
+            [
+                self._fake_executor_with_fill(custom_info_is_none=True),
+            ],
+        )
         controller._update_fill_latch()
         self.assertFalse(controller._has_filled)
 
     def test_executor_with_missing_executed_amount_base_key_is_skipped(self):
         # custom_info exists but lacks the key → dict.get returns None → skip.
         controller = self._make_controller()
-        setattr(controller, "executors_info", [
-            self._fake_executor_with_fill(missing_key=True),
-        ])
+        setattr(
+            controller,
+            "executors_info",
+            [
+                self._fake_executor_with_fill(missing_key=True),
+            ],
+        )
         controller._update_fill_latch()
         self.assertFalse(controller._has_filled)
 
     def test_executor_with_zero_executed_amount_does_not_flip_latch(self):
         # Strict > 0 guard: exactly zero must not trip the latch.
         controller = self._make_controller()
-        setattr(controller, "executors_info", [
-            self._fake_executor_with_fill(executed_amount_base=Decimal("0")),
-        ])
+        setattr(
+            controller,
+            "executors_info",
+            [
+                self._fake_executor_with_fill(executed_amount_base=Decimal("0")),
+            ],
+        )
         controller._update_fill_latch()
         self.assertFalse(controller._has_filled)
 
@@ -1568,11 +1567,15 @@ class TestBBOPegBuyUpdateFillLatch(unittest.TestCase):
         # First two have no fill; third does. The loop must continue past the
         # first negatives and trip the latch on the matching executor.
         controller = self._make_controller()
-        setattr(controller, "executors_info", [
-            self._fake_executor_with_fill(executed_amount_base=Decimal("0")),
-            self._fake_executor_with_fill(custom_info_is_none=True),
-            self._fake_executor_with_fill(executed_amount_base=Decimal("10")),
-        ])
+        setattr(
+            controller,
+            "executors_info",
+            [
+                self._fake_executor_with_fill(executed_amount_base=Decimal("0")),
+                self._fake_executor_with_fill(custom_info_is_none=True),
+                self._fake_executor_with_fill(executed_amount_base=Decimal("10")),
+            ],
+        )
         controller._update_fill_latch()
         self.assertTrue(controller._has_filled)
 
@@ -1586,10 +1589,14 @@ class TestBBOPegBuyUpdateFillLatch(unittest.TestCase):
         # another order after a fill.
         controller = self._make_controller()
         controller._has_filled = True
-        setattr(controller, "executors_info", [
-            self._fake_executor_with_fill(executed_amount_base=Decimal("0")),
-            self._fake_executor_with_fill(custom_info_is_none=True),
-        ])
+        setattr(
+            controller,
+            "executors_info",
+            [
+                self._fake_executor_with_fill(executed_amount_base=Decimal("0")),
+                self._fake_executor_with_fill(custom_info_is_none=True),
+            ],
+        )
         controller._update_fill_latch()
         self.assertTrue(controller._has_filled)
 
@@ -1600,9 +1607,13 @@ class TestBBOPegBuyUpdateFillLatch(unittest.TestCase):
         # strict > 0 guard catches this case too. If someone replaced > 0
         # with != 0 (treating any non-zero as a fill), this would catch it.
         controller = self._make_controller()
-        setattr(controller, "executors_info", [
-            self._fake_executor_with_fill(executed_amount_base=Decimal("-1")),
-        ])
+        setattr(
+            controller,
+            "executors_info",
+            [
+                self._fake_executor_with_fill(executed_amount_base=Decimal("-1")),
+            ],
+        )
         controller._update_fill_latch()
         self.assertFalse(controller._has_filled)
 
@@ -1612,9 +1623,13 @@ class TestBBOPegBuyUpdateFillLatch(unittest.TestCase):
         # If someone "simplifies" this to Decimal(executed) directly, a string
         # input might fail (in some scenarios) or behave unexpectedly.
         controller = self._make_controller()
-        setattr(controller, "executors_info", [
-            self._fake_executor_with_fill(executed_amount_base="5.0"),
-        ])
+        setattr(
+            controller,
+            "executors_info",
+            [
+                self._fake_executor_with_fill(executed_amount_base="5.0"),
+            ],
+        )
         controller._update_fill_latch()
         self.assertTrue(controller._has_filled)
 
@@ -1628,14 +1643,195 @@ class TestBBOPegBuyUpdateFillLatch(unittest.TestCase):
         # fills on cleanly-closed executors would be missed and the bot
         # would re-quote after a real fill.
         controller = self._make_controller()
-        setattr(controller, "executors_info", [
-            self._fake_executor_with_fill(
-                executed_amount_base=Decimal("5"),
-                is_active=False,
-            ),
-        ])
+        setattr(
+            controller,
+            "executors_info",
+            [
+                self._fake_executor_with_fill(
+                    executed_amount_base=Decimal("5"),
+                    is_active=False,
+                ),
+            ],
+        )
         controller._update_fill_latch()
         self.assertTrue(controller._has_filled)
+
+
+class TestBBOPegBuyDetermineExecutorActions(unittest.TestCase):
+    """End-to-end orchestration tests for determine_executor_actions.
+
+    Composes all the helpers tested individually elsewhere — focuses on
+    flow, decision branches, and the fill-latch gating that enforces the
+    one-shot guarantee. Each test sets up controller state and asserts
+    on the action list shape.
+    """
+
+    def _make_controller(
+        self,
+        *,
+        target_price: Optional[Decimal] = Decimal("0.4381"),
+        executors: Optional[List[ExecutorInfo]] = None,
+        has_filled: bool = False,
+        quantize_amount_side_effect=None,
+    ) -> BBOPegBuyController:
+        """Builds a controller with processed_data, executors_info, and
+        _has_filled pre-populated. quantize_order_amount defaults to identity.
+        """
+        config = BBOPegBuyConfig(
+            id="test-controller-id",
+            controller_name="bbo_peg_buy",
+            connector_name="htx",
+            trading_pair="XNO-USDT",
+            total_amount_quote=Decimal("20"),
+            update_interval=0.5,
+        )
+        market_data_provider = MagicMock(spec=MarketDataProvider)
+        market_data_provider.quantize_order_amount.side_effect = (
+            quantize_amount_side_effect or (lambda _c, _p, amount: amount)
+        )
+        market_data_provider.time.return_value = 1700000000.0
+        controller = BBOPegBuyController(
+            config=config,
+            market_data_provider=market_data_provider,
+            actions_queue=AsyncMock(spec=asyncio.Queue),
+        )
+        controller.processed_data = {"target_price": target_price}
+        setattr(controller, "executors_info", executors or [])
+        controller._has_filled = has_filled
+        return controller
+
+    # --- Happy path orchestration ---
+
+    def test_cold_start_emits_only_create_action(self):
+        # No executors yet, target price set, no fill → emit one Create.
+        controller = self._make_controller(target_price=Decimal("0.4381"))
+        actions = controller.determine_executor_actions()
+        self.assertEqual(len(actions), 1)
+        self.assertIsInstance(actions[0], CreateExecutorAction)
+
+    def test_steady_state_emits_no_actions_when_already_at_target(self):
+        # Active order at target → in_tolerance → no Stop, no Create.
+        at_target = _fake_executor(price=Decimal("0.4381"), amount=Decimal("45"))
+        controller = self._make_controller(
+            target_price=Decimal("0.4381"),
+            executors=[at_target],
+        )
+        actions = controller.determine_executor_actions()
+        self.assertEqual(actions, [])
+
+    def test_price_drift_emits_stop_then_create_in_order(self):
+        # Stale order, no in_tolerance, no fill → Stop first, then Create.
+        # Order matters: cancel old before placing new to avoid double-exposure.
+        stale = _fake_executor(price=Decimal("0.4380"), amount=Decimal("45"))
+        stale.id = "stale-1"
+        controller = self._make_controller(
+            target_price=Decimal("0.4381"),
+            executors=[stale],
+        )
+        actions = controller.determine_executor_actions()
+        self.assertEqual(len(actions), 2)
+        self.assertIsInstance(actions[0], StopExecutorAction)
+        self.assertIsInstance(actions[1], CreateExecutorAction)
+
+    def test_does_not_emit_create_when_in_tolerance_exists_alongside_stale(self):
+        # Mixed: one stale (different price) + one in_tolerance (at target).
+        # Stale gets stopped; no new Create because in_tolerance already covers.
+        stale = _fake_executor(price=Decimal("0.4380"), amount=Decimal("20"))
+        stale.id = "stale-1"
+        at_target = _fake_executor(price=Decimal("0.4381"), amount=Decimal("45"))
+        at_target.id = "at-target-1"
+        controller = self._make_controller(
+            target_price=Decimal("0.4381"),
+            executors=[stale, at_target],
+        )
+        actions = controller.determine_executor_actions()
+        stops = [a for a in actions if isinstance(a, StopExecutorAction)]
+        creates = [a for a in actions if isinstance(a, CreateExecutorAction)]
+        self.assertEqual(len(stops), 1)
+        self.assertEqual(creates, [])
+
+    # --- Early return / no-target ---
+
+    def test_returns_empty_list_when_target_price_is_none(self):
+        # No target price → bail immediately, regardless of executor state.
+        controller = self._make_controller(target_price=None)
+        actions = controller.determine_executor_actions()
+        self.assertEqual(actions, [])
+
+    def test_does_not_emit_stops_when_target_price_is_none_even_with_stale(self):
+        # CRITICAL NEGATIVE: if target_price is None, we early-return BEFORE
+        # categorizing. So even pre-existing stale orders don't get cancelled
+        # this tick. The function returns []. This prevents accidental mass
+        # cancellation during transient market data gaps (e.g., websocket
+        # reconnect, empty book moment).
+        stale = _fake_executor(price=Decimal("0.4380"), amount=Decimal("45"))
+        controller = self._make_controller(target_price=None, executors=[stale])
+        actions = controller.determine_executor_actions()
+        self.assertEqual(actions, [])
+
+    # --- Fill latch gating (one-shot guarantee) ---
+
+    def test_no_create_after_fill_latched(self):
+        # CRITICAL: _has_filled=True with no stale → return [] (no Create
+        # even though target exists and no in_tolerance). The one-shot
+        # guarantee gates here.
+        controller = self._make_controller(
+            target_price=Decimal("0.4381"),
+            has_filled=True,
+        )
+        actions = controller.determine_executor_actions()
+        self.assertEqual(actions, [])
+
+    def test_emits_stops_for_stale_even_after_fill_latched(self):
+        # _has_filled=True with stale → emit Stop only, no Create. We still
+        # want to clean up stale orders on the exchange (don't leave garbage).
+        stale = _fake_executor(price=Decimal("0.4380"), amount=Decimal("45"))
+        stale.id = "stale-1"
+        controller = self._make_controller(
+            target_price=Decimal("0.4381"),
+            has_filled=True,
+            executors=[stale],
+        )
+        actions = controller.determine_executor_actions()
+        self.assertEqual(len(actions), 1)
+        self.assertIsInstance(actions[0], StopExecutorAction)
+
+    def test_fill_in_executors_info_trips_latch_and_blocks_create(self):
+        # CRITICAL ORDERING: _update_fill_latch runs FIRST in
+        # determine_executor_actions. An executor with a fill must trip the
+        # latch BEFORE the create-or-not decision is made — otherwise the
+        # bot would emit one final order after a fill.
+        # Use an inactive executor with a fill so categorize filters it out
+        # (not stale, not in_tolerance) but latch still sees it.
+        filled = MagicMock()
+        filled.is_active = False
+        filled.custom_info = {"executed_amount_base": "5"}
+        filled.config = MagicMock(spec=OrderExecutorConfig)
+        filled.config.price = Decimal("0.4381")
+        controller = self._make_controller(
+            target_price=Decimal("0.4381"),
+            executors=[cast(ExecutorInfo, filled)],
+        )
+        self.assertFalse(controller._has_filled)
+        actions = controller.determine_executor_actions()
+        self.assertTrue(controller._has_filled)
+        creates = [a for a in actions if isinstance(a, CreateExecutorAction)]
+        self.assertEqual(creates, [])
+
+    # --- Defensive / edge ---
+
+    def test_does_not_emit_create_when_amount_quantizes_to_zero(self):
+        # CRITICAL DEFENSIVE: if the exchange snaps our requested amount to
+        # zero (below min order size, balance insufficient, etc.),
+        # _build_create_action returns None → no Create appended. The bot
+        # quietly does nothing this tick rather than emitting a degenerate
+        # zero-amount action that would be exchange-rejected.
+        controller = self._make_controller(
+            target_price=Decimal("0.4381"),
+            quantize_amount_side_effect=lambda _c, _p, _amount: Decimal("0"),
+        )
+        actions = controller.determine_executor_actions()
+        self.assertEqual(actions, [])
 
 
 if __name__ == "__main__":

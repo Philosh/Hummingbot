@@ -83,27 +83,6 @@ class BBOPegBuyController(ControllerBase):
             "target_price": target_price,
         }
 
-    def _compute_target_price(
-        self,
-        external_best_bid: Optional[Decimal],
-        tick: Decimal,
-        best_ask: Decimal,
-    ) -> Optional[Decimal]:
-        """Peg one tick above the external best bid, quantized to the exchange's
-        tick size. Returns None if there's no external bid to peg to, or if the
-        candidate would cross the ask (LIMIT_MAKER would be rejected).
-        """
-        if external_best_bid is None or external_best_bid <= 0:
-            return None
-        candidate = self.market_data_provider.quantize_order_price(
-            self.config.connector_name,
-            self.config.trading_pair,
-            external_best_bid + tick,
-        )
-        if not best_ask or candidate >= best_ask:
-            return None
-        return candidate
-
     def _external_best_bid(self) -> Optional[Decimal]:
         """
         Walk the bid book top-down and return the highest price level that
@@ -138,8 +117,8 @@ class BBOPegBuyController(ControllerBase):
         self, my_volume_by_price: Dict[Decimal, Decimal]
     ) -> Tuple[Optional[Decimal], List[Tuple[float, float]]]:
         """Walk the top 10 bid levels and return:
-          - the highest price where (book amount - our amount) > 0, else None
-          - the top-5 levels as (price, amount) float tuples, for logging
+        - the highest price where (book amount - our amount) > 0, else None
+        - the top-5 levels as (price, amount) float tuples, for logging
         """
         order_book = self.market_data_provider.get_order_book(
             self.config.connector_name, self.config.trading_pair
@@ -177,19 +156,26 @@ class BBOPegBuyController(ControllerBase):
         )
         self._last_logged_external_best_bid = result
 
-    def _update_fill_latch(self) -> None:
-        """Set _has_filled if any executor reports executed_amount_base > 0.
-        Once set, never reset within a process lifetime.
+    def _compute_target_price(
+        self,
+        external_best_bid: Optional[Decimal],
+        tick: Decimal,
+        best_ask: Decimal,
+    ) -> Optional[Decimal]:
+        """Peg one tick above the external best bid, quantized to the exchange's
+        tick size. Returns None if there's no external bid to peg to, or if the
+        candidate would cross the ask (LIMIT_MAKER would be rejected).
         """
-        if self._has_filled:
-            return
-        for e in self.executors_info:
-            executed = (
-                e.custom_info.get("executed_amount_base") if e.custom_info else None
-            )
-            if executed is not None and Decimal(str(executed)) > 0:
-                self._has_filled = True
-                return
+        if external_best_bid is None or external_best_bid <= 0:
+            return None
+        candidate = self.market_data_provider.quantize_order_price(
+            self.config.connector_name,
+            self.config.trading_pair,
+            external_best_bid + tick,
+        )
+        if not best_ask or candidate >= best_ask:
+            return None
+        return candidate
 
     def determine_executor_actions(self) -> List[ExecutorAction]:
         self._update_fill_latch()
@@ -211,6 +197,20 @@ class BBOPegBuyController(ControllerBase):
                 actions.append(create)
 
         return actions
+
+    def _update_fill_latch(self) -> None:
+        """Set _has_filled if any executor reports executed_amount_base > 0.
+        Once set, never reset within a process lifetime.
+        """
+        if self._has_filled:
+            return
+        for e in self.executors_info:
+            executed = (
+                e.custom_info.get("executed_amount_base") if e.custom_info else None
+            )
+            if executed is not None and Decimal(str(executed)) > 0:
+                self._has_filled = True
+                return
 
     def _categorize_active_orders(
         self, target_price: Decimal

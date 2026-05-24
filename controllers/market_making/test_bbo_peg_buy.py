@@ -461,5 +461,140 @@ class TestBBOPegBuyExternalBestBid(unittest.TestCase):
         self.assertEqual(controller._external_best_bid(), Decimal("0.4380"))
 
 
+class TestBBOPegBuyComputeTargetPrice(unittest.TestCase):
+    """Unit tests for _compute_target_price in isolation.
+
+    Tested directly (not through update_processed_data) so failures point at
+    pricing logic specifically, not at the orchestration around it.
+    """
+
+    def _make_controller(self, quantize_side_effect=None) -> BBOPegBuyController:
+        """Builds a controller with quantize_order_price as identity passthrough
+        unless a custom side_effect is provided. Stashes the mocked MDP on
+        self.market_data_provider_mock so tests can assert on its calls without
+        going through the spec-typed controller.market_data_provider attribute.
+        """
+        config = BBOPegBuyConfig(
+            id="test",
+            controller_name="bbo_peg_buy",
+            connector_name="htx",
+            trading_pair="XNO-USDT",
+            total_amount_quote=Decimal("20"),
+            update_interval=0.5,
+        )
+        market_data_provider = MagicMock(spec=MarketDataProvider)
+        market_data_provider.quantize_order_price.side_effect = (
+            quantize_side_effect or (lambda _c, _p, price: price)
+        )
+        self.market_data_provider_mock = market_data_provider
+        return BBOPegBuyController(
+            config=config,
+            market_data_provider=market_data_provider,
+            actions_queue=AsyncMock(spec=asyncio.Queue),
+        )
+
+    # --- Happy path ---
+
+    def test_returns_candidate_when_bid_and_ask_provide_room(self):
+        # bid 0.4380 + tick 0.0001 = 0.4381, ask 0.4385 → returns 0.4381.
+        controller = self._make_controller()
+        result = controller._compute_target_price(
+            external_best_bid=Decimal("0.4380"),
+            tick=Decimal("0.0001"),
+            best_ask=Decimal("0.4385"),
+        )
+        self.assertEqual(result, Decimal("0.4381"))
+
+    # --- external_best_bid input gates ---
+
+    def test_returns_none_when_external_bid_is_none(self):
+        controller = self._make_controller()
+        result = controller._compute_target_price(
+            external_best_bid=None,
+            tick=Decimal("0.0001"),
+            best_ask=Decimal("0.4385"),
+        )
+        self.assertIsNone(result)
+
+    def test_returns_none_when_external_bid_is_zero(self):
+        controller = self._make_controller()
+        result = controller._compute_target_price(
+            external_best_bid=Decimal("0"),
+            tick=Decimal("0.0001"),
+            best_ask=Decimal("0.4385"),
+        )
+        self.assertIsNone(result)
+
+    def test_returns_none_when_external_bid_is_negative(self):
+        # Defensive: bids should never be negative, but guard regardless.
+        controller = self._make_controller()
+        result = controller._compute_target_price(
+            external_best_bid=Decimal("-0.0001"),
+            tick=Decimal("0.0001"),
+            best_ask=Decimal("0.4385"),
+        )
+        self.assertIsNone(result)
+
+    # --- best_ask / crossing guard ---
+
+    def test_returns_none_when_best_ask_is_zero(self):
+        # Falsy ask short-circuits the crossing guard → bail.
+        controller = self._make_controller()
+        result = controller._compute_target_price(
+            external_best_bid=Decimal("0.4380"),
+            tick=Decimal("0.0001"),
+            best_ask=Decimal("0"),
+        )
+        self.assertIsNone(result)
+
+    def test_returns_none_when_candidate_equals_best_ask(self):
+        # bid 0.4384 + tick 0.0001 = 0.4385 == best_ask → blocked (strict >=)
+        controller = self._make_controller()
+        result = controller._compute_target_price(
+            external_best_bid=Decimal("0.4384"),
+            tick=Decimal("0.0001"),
+            best_ask=Decimal("0.4385"),
+        )
+        self.assertIsNone(result)
+
+    def test_returns_none_when_candidate_above_best_ask(self):
+        # bid 0.4390 + tick 0.0001 = 0.4391 > best_ask 0.4385 → clearly crosses.
+        controller = self._make_controller()
+        result = controller._compute_target_price(
+            external_best_bid=Decimal("0.4390"),
+            tick=Decimal("0.0001"),
+            best_ask=Decimal("0.4385"),
+        )
+        self.assertIsNone(result)
+
+    # --- Quantization plumbing ---
+
+    def test_quantize_called_with_external_bid_plus_tick(self):
+        # Verify quantize is called with the raw sum and exchange identifiers.
+        controller = self._make_controller()
+        controller._compute_target_price(
+            external_best_bid=Decimal("0.4380"),
+            tick=Decimal("0.0001"),
+            best_ask=Decimal("0.4385"),
+        )
+        self.market_data_provider_mock.quantize_order_price.assert_called_once_with(
+            "htx", "XNO-USDT", Decimal("0.4381")
+        )
+
+    def test_returns_quantized_value_not_raw_sum(self):
+        # If quantize snaps to a different price (e.g., exchange rounds down to
+        # the next valid tick), we must return that snapped value, not the
+        # unrounded sum. Pins that we trust the quantizer's output.
+        controller = self._make_controller(
+            quantize_side_effect=lambda _c, _p, _price: Decimal("0.4380")
+        )
+        result = controller._compute_target_price(
+            external_best_bid=Decimal("0.4380"),
+            tick=Decimal("0.0001"),
+            best_ask=Decimal("0.4385"),
+        )
+        self.assertEqual(result, Decimal("0.4380"))
+
+
 if __name__ == "__main__":
     unittest.main()

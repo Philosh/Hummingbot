@@ -11,7 +11,7 @@ the strategy layer.
 """
 
 from decimal import Decimal
-from typing import Dict, List, Optional
+from typing import Dict, List, Optional, Tuple
 
 from pydantic import Field
 
@@ -29,6 +29,7 @@ from hummingbot.strategy_v2.models.executor_actions import (
     ExecutorAction,
     StopExecutorAction,
 )
+from hummingbot.strategy_v2.models.executors_info import ExecutorInfo
 
 
 class BBOPegBuyConfig(ControllerConfigBase):
@@ -73,17 +74,7 @@ class BBOPegBuyController(ControllerBase):
         )
 
         external_best_bid = self._external_best_bid()
-
-        target_price: Optional[Decimal] = None
-        if external_best_bid is not None and external_best_bid > 0:
-            candidate = self.market_data_provider.quantize_order_price(
-                self.config.connector_name,
-                self.config.trading_pair,
-                external_best_bid + tick,
-            )
-            # LIMIT_MAKER is rejected if it would cross — skip this tick.
-            if best_ask and candidate < best_ask:
-                target_price = candidate
+        target_price = self._compute_target_price(external_best_bid, tick, best_ask)
 
         self.processed_data = {
             "tick": tick,
@@ -91,6 +82,27 @@ class BBOPegBuyController(ControllerBase):
             "best_ask": best_ask,
             "target_price": target_price,
         }
+
+    def _compute_target_price(
+        self,
+        external_best_bid: Optional[Decimal],
+        tick: Decimal,
+        best_ask: Decimal,
+    ) -> Optional[Decimal]:
+        """Peg one tick above the external best bid, quantized to the exchange's
+        tick size. Returns None if there's no external bid to peg to, or if the
+        candidate would cross the ask (LIMIT_MAKER would be rejected).
+        """
+        if external_best_bid is None or external_best_bid <= 0:
+            return None
+        candidate = self.market_data_provider.quantize_order_price(
+            self.config.connector_name,
+            self.config.trading_pair,
+            external_best_bid + tick,
+        )
+        if not best_ask or candidate >= best_ask:
+            return None
+        return candidate
 
     def _external_best_bid(self) -> Optional[Decimal]:
         """
@@ -101,10 +113,15 @@ class BBOPegBuyController(ControllerBase):
         Emits a forensic INFO line whenever the chosen price changes, so we
         can later audit why a particular target_price was picked.
         """
-        order_book = self.market_data_provider.get_order_book(
-            self.config.connector_name, self.config.trading_pair
-        )
+        my_volume_by_price = self._compute_own_volume_by_price()
+        result, top_levels = self._walk_bids_for_first_external(my_volume_by_price)
+        self._log_external_bid_change(result, top_levels, my_volume_by_price)
+        return result
 
+    def _compute_own_volume_by_price(self) -> Dict[Decimal, Decimal]:
+        """Aggregate our active executors' volume per price level.
+        Filters out inactive executors and non-OrderExecutorConfig configs.
+        """
         my_volume_by_price: Dict[Decimal, Decimal] = {}
         for e in self.executors_info:
             if not e.is_active:
@@ -115,8 +132,19 @@ class BBOPegBuyController(ControllerBase):
             my_volume_by_price[cfg.price] = (
                 my_volume_by_price.get(cfg.price, Decimal("0")) + cfg.amount
             )
+        return my_volume_by_price
 
-        top_levels: List[tuple] = []
+    def _walk_bids_for_first_external(
+        self, my_volume_by_price: Dict[Decimal, Decimal]
+    ) -> Tuple[Optional[Decimal], List[Tuple[float, float]]]:
+        """Walk the top 10 bid levels and return:
+          - the highest price where (book amount - our amount) > 0, else None
+          - the top-5 levels as (price, amount) float tuples, for logging
+        """
+        order_book = self.market_data_provider.get_order_book(
+            self.config.connector_name, self.config.trading_pair
+        )
+        top_levels: List[Tuple[float, float]] = []
         result: Optional[Decimal] = None
         for i, row in enumerate(order_book.bid_entries()):
             if i >= 10:
@@ -129,79 +157,111 @@ class BBOPegBuyController(ControllerBase):
                 external_amount = amount - my_volume_by_price.get(price, Decimal("0"))
                 if external_amount > 0:
                     result = price
+        return result, top_levels
 
-        if result != self._last_logged_external_best_bid:
-            my_vol_str = {float(k): float(v) for k, v in my_volume_by_price.items()}
-            self.logger().info(
-                f"[bbo_peg] external_best_bid={result} "
-                f"top5_bids={top_levels} my_volume={my_vol_str}"
+    def _log_external_bid_change(
+        self,
+        result: Optional[Decimal],
+        top_levels: List[Tuple[float, float]],
+        my_volume_by_price: Dict[Decimal, Decimal],
+    ) -> None:
+        """Emit a forensic INFO line only when the chosen external_best_bid
+        changes from the previously logged value. Updates the cache after logging.
+        """
+        if result == self._last_logged_external_best_bid:
+            return
+        my_vol_str = {float(k): float(v) for k, v in my_volume_by_price.items()}
+        self.logger().info(
+            f"[bbo_peg] external_best_bid={result} "
+            f"top5_bids={top_levels} my_volume={my_vol_str}"
+        )
+        self._last_logged_external_best_bid = result
+
+    def _update_fill_latch(self) -> None:
+        """Set _has_filled if any executor reports executed_amount_base > 0.
+        Once set, never reset within a process lifetime.
+        """
+        if self._has_filled:
+            return
+        for e in self.executors_info:
+            executed = (
+                e.custom_info.get("executed_amount_base") if e.custom_info else None
             )
-            self._last_logged_external_best_bid = result
-
-        return result
+            if executed is not None and Decimal(str(executed)) > 0:
+                self._has_filled = True
+                return
 
     def determine_executor_actions(self) -> List[ExecutorAction]:
-        # Latch on any fill (partial or full) across our executors.
-        if not self._has_filled:
-            for e in self.executors_info:
-                executed = (
-                    e.custom_info.get("executed_amount_base") if e.custom_info else None
-                )
-                if executed is not None and Decimal(str(executed)) > 0:
-                    self._has_filled = True
-                    break
+        self._update_fill_latch()
 
         target_price: Optional[Decimal] = self.processed_data.get("target_price")
         if target_price is None:
             return []
 
-        actions: List[ExecutorAction] = []
-        active = [e for e in self.executors_info if e.is_active]
-
-        stale = []
-        in_tolerance = []
-        for e in active:
-            cfg = e.config
-            if not isinstance(cfg, OrderExecutorConfig) or cfg.price is None:
-                continue
-            # Strict: any deviation from target_price triggers re-quote.
-            if cfg.price != target_price:
-                stale.append(e)
-            else:
-                in_tolerance.append(e)
-
-        for e in stale:
-            actions.append(
-                StopExecutorAction(
-                    controller_id=self.config.id,
-                    executor_id=e.id,
-                )
-            )
+        stale, in_tolerance = self._categorize_active_orders(target_price)
+        actions: List[ExecutorAction] = self._build_stop_actions(stale)
 
         # One-shot: never create another order once we've had any fill.
         if self._has_filled:
             return actions
 
         if not in_tolerance:
-            amount = self.market_data_provider.quantize_order_amount(
-                self.config.connector_name,
-                self.config.trading_pair,
-                self.config.total_amount_quote / target_price,
-            )
-            if amount > 0:
-                actions.append(
-                    CreateExecutorAction(
-                        controller_id=self.config.id,
-                        executor_config=OrderExecutorConfig(
-                            timestamp=self.market_data_provider.time(),
-                            connector_name=self.config.connector_name,
-                            trading_pair=self.config.trading_pair,
-                            side=TradeType.BUY,
-                            amount=amount,
-                            price=target_price,
-                            execution_strategy=ExecutionStrategy.LIMIT_MAKER,
-                        ),
-                    )
-                )
+            create = self._build_create_action(target_price)
+            if create is not None:
+                actions.append(create)
 
         return actions
+
+    def _categorize_active_orders(
+        self, target_price: Decimal
+    ) -> Tuple[List[ExecutorInfo], List[ExecutorInfo]]:
+        """Split active orders into (stale, in_tolerance) by exact price match.
+        Filters out inactive executors and non-OrderExecutorConfig configs.
+        """
+        stale: List[ExecutorInfo] = []
+        in_tolerance: List[ExecutorInfo] = []
+        for e in self.executors_info:
+            if not e.is_active:
+                continue
+            cfg = e.config
+            if not isinstance(cfg, OrderExecutorConfig) or cfg.price is None:
+                continue
+            if cfg.price != target_price:
+                stale.append(e)
+            else:
+                in_tolerance.append(e)
+        return stale, in_tolerance
+
+    def _build_stop_actions(
+        self, executors: List[ExecutorInfo]
+    ) -> List[ExecutorAction]:
+        return [
+            StopExecutorAction(controller_id=self.config.id, executor_id=e.id)
+            for e in executors
+        ]
+
+    def _build_create_action(
+        self, target_price: Decimal
+    ) -> Optional[CreateExecutorAction]:
+        """Build a LIMIT_MAKER buy at target_price.
+        Returns None if quantized amount is zero (book/balance can't support an order).
+        """
+        amount = self.market_data_provider.quantize_order_amount(
+            self.config.connector_name,
+            self.config.trading_pair,
+            self.config.total_amount_quote / target_price,
+        )
+        if amount <= 0:
+            return None
+        return CreateExecutorAction(
+            controller_id=self.config.id,
+            executor_config=OrderExecutorConfig(
+                timestamp=self.market_data_provider.time(),
+                connector_name=self.config.connector_name,
+                trading_pair=self.config.trading_pair,
+                side=TradeType.BUY,
+                amount=amount,
+                price=target_price,
+                execution_strategy=ExecutionStrategy.LIMIT_MAKER,
+            ),
+        )

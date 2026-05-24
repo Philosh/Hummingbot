@@ -11,7 +11,7 @@ from typing import List, Optional, cast
 
 from pydantic import Field
 
-from hummingbot.core.data_type.common import PriceType, TradeType
+from hummingbot.core.data_type.common import MarketDict, PriceType, TradeType
 from hummingbot.strategy_v2.controllers.controller_base import (
     ControllerBase,
     ControllerConfigBase,
@@ -28,7 +28,7 @@ from hummingbot.strategy_v2.models.executor_actions import (
 
 
 class BBOPegBuyConfig(ControllerConfigBase):
-    controller_type: str = "generic"
+    controller_type: str = "market_making"
     controller_name: str = "bbo_peg_buy"
 
     connector_name: str = Field(default="htx")
@@ -38,6 +38,11 @@ class BBOPegBuyConfig(ControllerConfigBase):
         default=1,
         description="Re-quote when best_bid drifts more than N ticks from our quoted price.",
     )
+
+    def update_markets(self, markets: MarketDict) -> MarketDict:
+        # Upstream's add_or_update signature mistypes *args as the set type
+        # itself instead of a set element; mirrors MarketMakingControllerConfigBase.
+        return markets.add_or_update(self.connector_name, self.trading_pair)  # type: ignore[arg-type]  # ty: ignore[invalid-argument-type]
 
 
 class BBOPegBuyController(ControllerBase):

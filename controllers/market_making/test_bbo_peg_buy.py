@@ -595,6 +595,29 @@ class TestBBOPegBuyComputeTargetPrice(unittest.TestCase):
         )
         self.assertEqual(result, Decimal("0.4380"))
 
+    # --- Negative cases (what the function must NOT do) ---
+
+    def test_does_not_call_quantize_when_external_bid_is_none(self):
+        # Early return must skip the quantize side effect entirely. If someone
+        # refactors and breaks the guard, we'd silently call quantize with None.
+        controller = self._make_controller()
+        controller._compute_target_price(
+            external_best_bid=None,
+            tick=Decimal("0.0001"),
+            best_ask=Decimal("0.4385"),
+        )
+        self.market_data_provider_mock.quantize_order_price.assert_not_called()
+
+    def test_does_not_call_quantize_when_external_bid_is_zero(self):
+        # Same short-circuit guard, zero case.
+        controller = self._make_controller()
+        controller._compute_target_price(
+            external_best_bid=Decimal("0"),
+            tick=Decimal("0.0001"),
+            best_ask=Decimal("0.4385"),
+        )
+        self.market_data_provider_mock.quantize_order_price.assert_not_called()
+
 
 class TestBBOPegBuyWalkBidsForFirstExternal(unittest.TestCase):
     """Direct unit tests for _walk_bids_for_first_external in isolation.
@@ -717,6 +740,28 @@ class TestBBOPegBuyWalkBidsForFirstExternal(unittest.TestCase):
         my_volume = {Decimal("0.4380"): Decimal("100")}
         result, _ = controller._walk_bids_for_first_external(my_volume)
         self.assertEqual(result, Decimal("0.4379"))
+
+    # --- Negative cases (what the walker must NOT do) ---
+
+    def test_never_returns_a_fully_owned_price_in_mixed_book(self):
+        # Critical safety invariant: the walker must NEVER return a price
+        # we fully own. If it did, we'd peg one tick above our own quote,
+        # which is the self-anchoring runaway the walker exists to prevent.
+        # Book has fully-owned levels at 0.4380 and 0.4378, external at 0.4379.
+        controller, _ = _make_controller_for_walker(
+            bid_levels=[
+                (Decimal("0.4380"), Decimal("100")),  # fully ours
+                (Decimal("0.4379"), Decimal("50")),   # external
+                (Decimal("0.4378"), Decimal("200")),  # fully ours
+            ]
+        )
+        my_volume = {
+            Decimal("0.4380"): Decimal("100"),
+            Decimal("0.4378"): Decimal("200"),
+        }
+        result, _ = controller._walk_bids_for_first_external(my_volume)
+        self.assertNotEqual(result, Decimal("0.4380"))
+        self.assertNotEqual(result, Decimal("0.4378"))
 
 
 if __name__ == "__main__":

@@ -2,7 +2,7 @@ import asyncio
 import unittest
 from decimal import Decimal
 from test.isolated_asyncio_wrapper_test_case import IsolatedAsyncioWrapperTestCase
-from typing import List, Optional, Tuple
+from typing import List, Optional, Tuple, cast
 from unittest.mock import AsyncMock, MagicMock
 
 from hummingbot.core.data_type.common import TradeType
@@ -11,7 +11,11 @@ from hummingbot.strategy_v2.executors.order_executor.data_types import (
     ExecutionStrategy,
     OrderExecutorConfig,
 )
-from hummingbot.strategy_v2.models.executor_actions import CreateExecutorAction
+from hummingbot.strategy_v2.models.executor_actions import (
+    CreateExecutorAction,
+    StopExecutorAction,
+)
+from hummingbot.strategy_v2.models.executors_info import ExecutorInfo
 
 from controllers.market_making.bbo_peg_buy import BBOPegBuyConfig, BBOPegBuyController
 
@@ -1175,6 +1179,124 @@ class TestBBOPegBuyBuildCreateAction(unittest.TestCase):
         )
         result = controller._build_create_action(target_price=Decimal("0.4381"))
         self.assertIsNone(result)
+
+
+class TestBBOPegBuyBuildStopActions(unittest.TestCase):
+    """Direct unit tests for _build_stop_actions in isolation.
+
+    Pure list-comprehension transformer: every executor in → one
+    StopExecutorAction out, no filtering. Pinning the contract so future
+    refactors don't accidentally add filtering (which would silently leave
+    stale orders alive on the exchange).
+    """
+
+    def _make_controller(self) -> BBOPegBuyController:
+        config = BBOPegBuyConfig(
+            id="test-controller-id",
+            controller_name="bbo_peg_buy",
+            connector_name="htx",
+            trading_pair="XNO-USDT",
+            total_amount_quote=Decimal("20"),
+            update_interval=0.5,
+        )
+        return BBOPegBuyController(
+            config=config,
+            market_data_provider=MagicMock(spec=MarketDataProvider),
+            actions_queue=AsyncMock(spec=asyncio.Queue),
+        )
+
+    def _fake_executor_with_id(
+        self, executor_id: str, is_active: bool = True
+    ) -> ExecutorInfo:
+        executor = MagicMock()
+        executor.id = executor_id
+        executor.is_active = is_active
+        return cast(ExecutorInfo, executor)
+
+    # --- Happy path / shape ---
+
+    def test_returns_one_action_per_executor(self):
+        controller = self._make_controller()
+        executors = [
+            self._fake_executor_with_id("exec-1"),
+            self._fake_executor_with_id("exec-2"),
+            self._fake_executor_with_id("exec-3"),
+        ]
+        result = controller._build_stop_actions(executors)
+        self.assertEqual(len(result), 3)
+
+    def test_each_action_uses_controller_config_id(self):
+        controller = self._make_controller()
+        executors = [self._fake_executor_with_id("exec-1")]
+        result = controller._build_stop_actions(executors)
+        action = result[0]
+        assert isinstance(action, StopExecutorAction)
+        self.assertEqual(action.controller_id, "test-controller-id")
+
+    def test_each_action_uses_executor_id_from_input(self):
+        controller = self._make_controller()
+        executors = [
+            self._fake_executor_with_id("alpha"),
+            self._fake_executor_with_id("beta"),
+        ]
+        result = controller._build_stop_actions(executors)
+        assert isinstance(result[0], StopExecutorAction)
+        assert isinstance(result[1], StopExecutorAction)
+        self.assertEqual(result[0].executor_id, "alpha")
+        self.assertEqual(result[1].executor_id, "beta")
+
+    def test_preserves_input_order(self):
+        # The order of stop actions should match the order of input executors.
+        # Reordering could cause subtle issues if the framework processes them
+        # in a specific sequence.
+        controller = self._make_controller()
+        executors = [self._fake_executor_with_id(f"exec-{i}") for i in range(5)]
+        result = controller._build_stop_actions(executors)
+        for i, action in enumerate(result):
+            assert isinstance(action, StopExecutorAction)
+            self.assertEqual(action.executor_id, f"exec-{i}")
+
+    # --- Safety: every action is a Stop ---
+
+    def test_all_actions_are_stop_executor_actions(self):
+        # CRITICAL: must NEVER produce a CreateExecutorAction or any other
+        # type. If a refactor accidentally swapped action classes, this
+        # catches it before the framework executes the wrong intent.
+        controller = self._make_controller()
+        executors = [
+            self._fake_executor_with_id("exec-1"),
+            self._fake_executor_with_id("exec-2"),
+        ]
+        result = controller._build_stop_actions(executors)
+        for action in result:
+            self.assertIsInstance(action, StopExecutorAction)
+
+    # --- Negative / edge cases ---
+
+    def test_returns_empty_list_when_input_is_empty(self):
+        # Edge: no executors to stop → no actions. Empty list, not None.
+        controller = self._make_controller()
+        result = controller._build_stop_actions([])
+        self.assertEqual(result, [])
+
+    def test_builds_stop_for_every_executor_regardless_of_activity(self):
+        # CRITICAL CONTRACT: this function does NOT filter by is_active.
+        # The caller (_categorize_active_orders) is responsible for that.
+        # If a refactor adds is_active filtering here, "stale-but-inactive"
+        # executors would slip past stop emission and could linger on the
+        # exchange. Pin the no-filter behavior with a mix of states.
+        controller = self._make_controller()
+        executors = [
+            self._fake_executor_with_id("active-1", is_active=True),
+            self._fake_executor_with_id("inactive-2", is_active=False),
+            self._fake_executor_with_id("active-3", is_active=True),
+        ]
+        result = controller._build_stop_actions(executors)
+        self.assertEqual(len(result), 3)
+        executor_ids = [
+            a.executor_id for a in result if isinstance(a, StopExecutorAction)
+        ]
+        self.assertIn("inactive-2", executor_ids)
 
 
 if __name__ == "__main__":

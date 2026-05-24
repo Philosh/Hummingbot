@@ -1,13 +1,15 @@
 """
 BBO Peg Buy Controller — minimal V2 controller scaffold.
 
-Pegs a single LIMIT_MAKER buy at best_bid + 1 tick. No close-side,
-no triple barrier, no rebalance. WS-fed via MarketDataProvider — zero
-HTTP polling at the strategy layer.
+Pegs a single LIMIT_MAKER buy at external_best_bid + 1 tick, where
+external_best_bid excludes our own resting order (so we never anchor
+to ourselves). Re-quotes on any drift. No close-side, no triple
+barrier, no rebalance. WS-fed via MarketDataProvider — zero HTTP
+polling at the strategy layer.
 """
 
 from decimal import Decimal
-from typing import List, Optional, cast
+from typing import Dict, List, Optional
 
 from pydantic import Field
 
@@ -34,11 +36,6 @@ class BBOPegBuyConfig(ControllerConfigBase):
     connector_name: str = Field(default="htx")
     trading_pair: str = Field(default="XNO-USDT")
 
-    requote_tolerance_ticks: int = Field(
-        default=1,
-        description="Re-quote when best_bid drifts more than N ticks from our quoted price.",
-    )
-
     def update_markets(self, markets: MarketDict) -> MarketDict:
         # Upstream's add_or_update signature mistypes *args as the set type
         # itself instead of a set element; mirrors MarketMakingControllerConfigBase.
@@ -58,17 +55,16 @@ class BBOPegBuyController(ControllerBase):
         )
         tick: Decimal = rules.min_price_increment
 
-        best_bid: Decimal = self.market_data_provider.get_price_by_type(
-            self.config.connector_name, self.config.trading_pair, PriceType.BestBid
-        )
         best_ask: Decimal = self.market_data_provider.get_price_by_type(
             self.config.connector_name, self.config.trading_pair, PriceType.BestAsk
         )
 
+        external_best_bid = self._external_best_bid()
+
         target_price: Optional[Decimal] = None
-        if best_bid and best_bid > 0:
+        if external_best_bid is not None and external_best_bid > 0:
             candidate = self.market_data_provider.quantize_order_price(
-                self.config.connector_name, self.config.trading_pair, best_bid + tick
+                self.config.connector_name, self.config.trading_pair, external_best_bid + tick
             )
             # LIMIT_MAKER is rejected if it would cross — skip this tick.
             if best_ask and candidate < best_ask:
@@ -76,18 +72,44 @@ class BBOPegBuyController(ControllerBase):
 
         self.processed_data = {
             "tick": tick,
-            "best_bid": best_bid,
+            "external_best_bid": external_best_bid,
             "best_ask": best_ask,
             "target_price": target_price,
         }
+
+    def _external_best_bid(self) -> Optional[Decimal]:
+        """
+        Walk the bid book top-down and return the highest price level that
+        has volume beyond what our own active executors are resting there.
+        Prevents the controller from chasing its own quote.
+        """
+        order_book = self.market_data_provider.get_order_book(
+            self.config.connector_name, self.config.trading_pair
+        )
+
+        my_volume_by_price: Dict[Decimal, Decimal] = {}
+        for e in self.executors_info:
+            if not e.is_active:
+                continue
+            cfg = e.config
+            if not isinstance(cfg, OrderExecutorConfig) or cfg.price is None:
+                continue
+            my_volume_by_price[cfg.price] = (
+                my_volume_by_price.get(cfg.price, Decimal("0")) + cfg.amount
+            )
+
+        for row in order_book.bid_entries():
+            price = Decimal(str(row.price))
+            amount = Decimal(str(row.amount))
+            external_amount = amount - my_volume_by_price.get(price, Decimal("0"))
+            if external_amount > 0:
+                return price
+        return None
 
     def determine_executor_actions(self) -> List[ExecutorAction]:
         target_price: Optional[Decimal] = self.processed_data.get("target_price")
         if target_price is None:
             return []
-
-        tick = cast(Decimal, self.processed_data["tick"])
-        tolerance = Decimal(self.config.requote_tolerance_ticks) * tick
 
         actions: List[ExecutorAction] = []
         active = [e for e in self.executors_info if e.is_active]
@@ -98,7 +120,8 @@ class BBOPegBuyController(ControllerBase):
             cfg = e.config
             if not isinstance(cfg, OrderExecutorConfig) or cfg.price is None:
                 continue
-            if abs(cfg.price - target_price) > tolerance:
+            # Strict: any deviation from target_price triggers re-quote.
+            if cfg.price != target_price:
                 stale.append(e)
             else:
                 in_tolerance.append(e)

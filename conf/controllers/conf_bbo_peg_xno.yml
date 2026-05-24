@@ -5,11 +5,9 @@ controller_type: market_making
 connector_name: htx
 trading_pair: XNO-USDT
 
-# Single LIMIT_MAKER buy at best_bid + 1 tick. Order size = this / quoted price.
+# Single LIMIT_MAKER buy at external_best_bid + 1 tick (excluding our own
+# resting order). Order size = this / quoted price.
 total_amount_quote: 20
-
-# Re-quote when best_bid drifts more than N ticks from where we quoted.
-requote_tolerance_ticks: 1
 
 manual_kill_switch: false
 initial_positions: []

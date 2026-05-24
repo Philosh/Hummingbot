@@ -764,5 +764,146 @@ class TestBBOPegBuyWalkBidsForFirstExternal(unittest.TestCase):
         self.assertNotEqual(result, Decimal("0.4378"))
 
 
+class TestBBOPegBuyComputeOwnVolumeByPrice(unittest.TestCase):
+    """Direct unit tests for _compute_own_volume_by_price in isolation.
+
+    Aggregates active executors' volume into a per-price dict. The filters
+    are also exercised indirectly through TestBBOPegBuyExternalBestBid,
+    but the dict-shape contract and aggregation semantics are pinned here.
+    """
+
+    # --- Positive cases ---
+
+    def test_empty_executors_info_returns_empty_dict(self):
+        controller, _ = _make_controller_for_walker(executors=[])
+        self.assertEqual(controller._compute_own_volume_by_price(), {})
+
+    def test_single_active_executor_returns_single_entry(self):
+        controller, _ = _make_controller_for_walker(
+            executors=[_fake_executor(price=Decimal("0.4380"), amount=Decimal("50"))]
+        )
+        result = controller._compute_own_volume_by_price()
+        self.assertEqual(result, {Decimal("0.4380"): Decimal("50")})
+
+    def test_multiple_executors_different_prices_separate_entries(self):
+        # Three executors at three different prices → three dict entries.
+        controller, _ = _make_controller_for_walker(
+            executors=[
+                _fake_executor(price=Decimal("0.4380"), amount=Decimal("10")),
+                _fake_executor(price=Decimal("0.4379"), amount=Decimal("20")),
+                _fake_executor(price=Decimal("0.4378"), amount=Decimal("30")),
+            ]
+        )
+        result = controller._compute_own_volume_by_price()
+        self.assertEqual(
+            result,
+            {
+                Decimal("0.4380"): Decimal("10"),
+                Decimal("0.4379"): Decimal("20"),
+                Decimal("0.4378"): Decimal("30"),
+            },
+        )
+
+    def test_multiple_executors_same_price_sum_volumes(self):
+        # Two executors at the same price → summed.
+        controller, _ = _make_controller_for_walker(
+            executors=[
+                _fake_executor(price=Decimal("0.4380"), amount=Decimal("30")),
+                _fake_executor(price=Decimal("0.4380"), amount=Decimal("50")),
+            ]
+        )
+        result = controller._compute_own_volume_by_price()
+        self.assertEqual(result, {Decimal("0.4380"): Decimal("80")})
+
+    # --- Filter rules (each rule pinned in isolation) ---
+
+    def test_inactive_executor_excluded(self):
+        controller, _ = _make_controller_for_walker(
+            executors=[
+                _fake_executor(
+                    price=Decimal("0.4380"),
+                    amount=Decimal("100"),
+                    is_active=False,
+                )
+            ]
+        )
+        self.assertEqual(controller._compute_own_volume_by_price(), {})
+
+    def test_non_order_executor_config_excluded(self):
+        controller, _ = _make_controller_for_walker(
+            executors=[
+                _fake_executor(
+                    price=Decimal("0.4380"),
+                    amount=Decimal("100"),
+                    use_order_executor_config=False,
+                )
+            ]
+        )
+        self.assertEqual(controller._compute_own_volume_by_price(), {})
+
+    def test_executor_with_none_price_excluded(self):
+        controller, _ = _make_controller_for_walker(
+            executors=[_fake_executor(price=None, amount=Decimal("100"))]
+        )
+        self.assertEqual(controller._compute_own_volume_by_price(), {})
+
+    # --- Negative / edge cases ---
+
+    def test_returns_empty_dict_when_all_executors_filtered_out(self):
+        # Mix of filter reasons — every executor excluded by a different rule.
+        # All three filters must work together, not just individually.
+        controller, _ = _make_controller_for_walker(
+            executors=[
+                _fake_executor(
+                    price=Decimal("0.4380"),
+                    amount=Decimal("100"),
+                    is_active=False,
+                ),
+                _fake_executor(
+                    price=Decimal("0.4379"),
+                    amount=Decimal("100"),
+                    use_order_executor_config=False,
+                ),
+                _fake_executor(price=None, amount=Decimal("100")),
+            ]
+        )
+        self.assertEqual(controller._compute_own_volume_by_price(), {})
+
+    def test_filtered_executor_price_does_not_appear_in_result_keys(self):
+        # Inactive executor at 0.4380 → that price must NOT show up as a key.
+        # If it did (with amount 0 or otherwise), the walker would see it
+        # in my_volume_by_price.get(price, 0) and incorrectly subtract.
+        controller, _ = _make_controller_for_walker(
+            executors=[
+                _fake_executor(
+                    price=Decimal("0.4380"),
+                    amount=Decimal("100"),
+                    is_active=False,
+                ),
+                _fake_executor(price=Decimal("0.4379"), amount=Decimal("50")),
+            ]
+        )
+        result = controller._compute_own_volume_by_price()
+        self.assertNotIn(Decimal("0.4380"), result)
+        # Sanity: the active one IS there.
+        self.assertIn(Decimal("0.4379"), result)
+
+    def test_aggregation_does_not_overwrite_with_last_value(self):
+        # CRITICAL: three executors at the same price with amounts 10, 20, 30.
+        # If aggregation accidentally overwrites instead of summing, result
+        # would be 30 (the last). Correct sum is 60. The differential pins
+        # the contract — passes only if += is used, not =.
+        controller, _ = _make_controller_for_walker(
+            executors=[
+                _fake_executor(price=Decimal("0.4380"), amount=Decimal("10")),
+                _fake_executor(price=Decimal("0.4380"), amount=Decimal("20")),
+                _fake_executor(price=Decimal("0.4380"), amount=Decimal("30")),
+            ]
+        )
+        result = controller._compute_own_volume_by_price()
+        self.assertNotEqual(result[Decimal("0.4380")], Decimal("30"))
+        self.assertEqual(result[Decimal("0.4380")], Decimal("60"))
+
+
 if __name__ == "__main__":
     unittest.main()

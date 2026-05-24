@@ -66,6 +66,9 @@ class BBOPegBuyController(ControllerBase):
         # Cache of the last logged external_best_bid value, so we only emit
         # a diagnostic line when the chosen price actually changes.
         self._last_logged_external_best_bid: Optional[Decimal] = None
+        # Cache of the anti-spoof gate's last state, so we only log on
+        # blocked <-> cleared transitions. False = not currently gated.
+        self._gate_blocked: bool = False
 
     async def update_processed_data(self):
         rules = self.market_data_provider.get_trading_rules(
@@ -176,7 +179,11 @@ class BBOPegBuyController(ControllerBase):
         if not best_ask:
             return None
         spread_pct = self._compute_spread_pct(external_best_bid, best_ask)
-        if spread_pct < self.config.min_spread_pct:
+        gate_blocked = spread_pct < self.config.min_spread_pct
+        self._log_gate_state_change(
+            gate_blocked, external_best_bid, best_ask, spread_pct
+        )
+        if gate_blocked:
             return None
         candidate = self.market_data_provider.quantize_order_price(
             self.config.connector_name,
@@ -197,6 +204,27 @@ class BBOPegBuyController(ControllerBase):
         external_best_bid > 0.
         """
         return (best_ask - external_best_bid) / external_best_bid
+
+    def _log_gate_state_change(
+        self,
+        gate_blocked: bool,
+        external_best_bid: Decimal,
+        best_ask: Decimal,
+        spread_pct: Decimal,
+    ) -> None:
+        """Emit a forensic INFO line only when the anti-spoof gate transitions
+        between blocked and cleared. Rate-limits to one line per state change
+        so naturally-tight markets don't spam the log every tick.
+        """
+        if gate_blocked == self._gate_blocked:
+            return
+        state = "blocked" if gate_blocked else "cleared"
+        self.logger().info(
+            f"[bbo_peg] gate_{state} external_best_bid={external_best_bid} "
+            f"best_ask={best_ask} spread={spread_pct} "
+            f"min={self.config.min_spread_pct}"
+        )
+        self._gate_blocked = gate_blocked
 
     def determine_executor_actions(self) -> List[ExecutorAction]:
         self._update_fill_latch()

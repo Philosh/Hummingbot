@@ -1299,5 +1299,172 @@ class TestBBOPegBuyBuildStopActions(unittest.TestCase):
         self.assertIn("inactive-2", executor_ids)
 
 
+class TestBBOPegBuyCategorizeActiveOrders(unittest.TestCase):
+    """Direct unit tests for _categorize_active_orders in isolation.
+
+    Splits executors_info into (stale, in_tolerance) by exact price match
+    against target_price. Pins the filter rules, strict price equality,
+    and the negative invariant that filtered executors appear in NEITHER
+    list (not silently dropped into stale).
+    """
+
+    # --- Positive: basic categorization ---
+
+    def test_empty_executors_info_returns_two_empty_lists(self):
+        # Edge: no executors at all → ([], []).
+        controller, _ = _make_controller_for_walker(executors=[])
+        stale, in_tolerance = controller._categorize_active_orders(
+            Decimal("0.4381")
+        )
+        self.assertEqual(stale, [])
+        self.assertEqual(in_tolerance, [])
+
+    def test_executor_at_target_price_categorized_as_in_tolerance(self):
+        executor = _fake_executor(price=Decimal("0.4381"), amount=Decimal("50"))
+        controller, _ = _make_controller_for_walker(executors=[executor])
+        stale, in_tolerance = controller._categorize_active_orders(
+            Decimal("0.4381")
+        )
+        self.assertEqual(stale, [])
+        self.assertEqual(in_tolerance, [executor])
+
+    def test_executor_at_different_price_categorized_as_stale(self):
+        executor = _fake_executor(price=Decimal("0.4380"), amount=Decimal("50"))
+        controller, _ = _make_controller_for_walker(executors=[executor])
+        stale, in_tolerance = controller._categorize_active_orders(
+            Decimal("0.4381")
+        )
+        self.assertEqual(stale, [executor])
+        self.assertEqual(in_tolerance, [])
+
+    def test_multiple_executors_split_correctly_into_both_lists(self):
+        # Two at target → in_tolerance; two off-target → stale.
+        at_target_1 = _fake_executor(price=Decimal("0.4381"), amount=Decimal("10"))
+        at_target_2 = _fake_executor(price=Decimal("0.4381"), amount=Decimal("20"))
+        stale_1 = _fake_executor(price=Decimal("0.4379"), amount=Decimal("30"))
+        stale_2 = _fake_executor(price=Decimal("0.4378"), amount=Decimal("40"))
+        controller, _ = _make_controller_for_walker(
+            executors=[at_target_1, stale_1, at_target_2, stale_2]
+        )
+        stale, in_tolerance = controller._categorize_active_orders(
+            Decimal("0.4381")
+        )
+        self.assertEqual(set(in_tolerance), {at_target_1, at_target_2})
+        self.assertEqual(set(stale), {stale_1, stale_2})
+
+    # --- Filter rules ---
+
+    def test_inactive_executor_excluded(self):
+        # Inactive at target_price — must NOT appear in either list.
+        executor = _fake_executor(
+            price=Decimal("0.4381"),
+            amount=Decimal("50"),
+            is_active=False,
+        )
+        controller, _ = _make_controller_for_walker(executors=[executor])
+        stale, in_tolerance = controller._categorize_active_orders(
+            Decimal("0.4381")
+        )
+        self.assertEqual(stale, [])
+        self.assertEqual(in_tolerance, [])
+
+    def test_non_order_executor_config_excluded(self):
+        # Wrong config type — must NOT appear in either list.
+        executor = _fake_executor(
+            price=Decimal("0.4381"),
+            amount=Decimal("50"),
+            use_order_executor_config=False,
+        )
+        controller, _ = _make_controller_for_walker(executors=[executor])
+        stale, in_tolerance = controller._categorize_active_orders(
+            Decimal("0.4381")
+        )
+        self.assertEqual(stale, [])
+        self.assertEqual(in_tolerance, [])
+
+    def test_executor_with_none_price_excluded(self):
+        # OrderExecutorConfig but price is None — must NOT appear in either.
+        executor = _fake_executor(price=None, amount=Decimal("50"))
+        controller, _ = _make_controller_for_walker(executors=[executor])
+        stale, in_tolerance = controller._categorize_active_orders(
+            Decimal("0.4381")
+        )
+        self.assertEqual(stale, [])
+        self.assertEqual(in_tolerance, [])
+
+    # --- Critical: strict price equality ---
+
+    def test_categorization_uses_strict_price_equality(self):
+        # CRITICAL: any tiny price difference → stale (no tolerance window).
+        # If someone changes the != comparison to an "approximately equal"
+        # check, an executor that's 1 tick off (or even 0.00000001 off) would
+        # be classified as in_tolerance and never re-quoted. Pin the strict
+        # behavior with a near-but-not-equal price.
+        executor = _fake_executor(
+            price=Decimal("0.43810001"),  # off by 0.00000001
+            amount=Decimal("50"),
+        )
+        controller, _ = _make_controller_for_walker(executors=[executor])
+        stale, in_tolerance = controller._categorize_active_orders(
+            Decimal("0.4381")
+        )
+        self.assertEqual(stale, [executor])
+        self.assertEqual(in_tolerance, [])
+
+    # --- Negative / edge cases ---
+
+    def test_filtered_executor_appears_in_neither_list(self):
+        # CRITICAL NEGATIVE: ALL three filtered types (inactive, wrong-config,
+        # none-price) must be excluded from BOTH lists. A subtle refactor
+        # could accidentally drop them into stale (treating them as
+        # "to be cancelled") — that would corrupt downstream stop emission.
+        inactive = _fake_executor(
+            price=Decimal("0.4381"),
+            amount=Decimal("50"),
+            is_active=False,
+        )
+        wrong_config = _fake_executor(
+            price=Decimal("0.4381"),
+            amount=Decimal("50"),
+            use_order_executor_config=False,
+        )
+        none_price = _fake_executor(price=None, amount=Decimal("50"))
+        controller, _ = _make_controller_for_walker(
+            executors=[inactive, wrong_config, none_price]
+        )
+        stale, in_tolerance = controller._categorize_active_orders(
+            Decimal("0.4381")
+        )
+        self.assertNotIn(inactive, stale)
+        self.assertNotIn(inactive, in_tolerance)
+        self.assertNotIn(wrong_config, stale)
+        self.assertNotIn(wrong_config, in_tolerance)
+        self.assertNotIn(none_price, stale)
+        self.assertNotIn(none_price, in_tolerance)
+
+    def test_all_executors_filtered_returns_two_empty_lists(self):
+        # Edge: every executor filtered for a different reason → ([], []).
+        controller, _ = _make_controller_for_walker(
+            executors=[
+                _fake_executor(
+                    price=Decimal("0.4381"),
+                    amount=Decimal("50"),
+                    is_active=False,
+                ),
+                _fake_executor(
+                    price=Decimal("0.4381"),
+                    amount=Decimal("50"),
+                    use_order_executor_config=False,
+                ),
+                _fake_executor(price=None, amount=Decimal("50")),
+            ]
+        )
+        stale, in_tolerance = controller._categorize_active_orders(
+            Decimal("0.4381")
+        )
+        self.assertEqual(stale, [])
+        self.assertEqual(in_tolerance, [])
+
+
 if __name__ == "__main__":
     unittest.main()

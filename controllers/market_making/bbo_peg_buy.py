@@ -42,6 +42,10 @@ class BBOPegBuyConfig(ControllerConfigBase):
         default=0.5,
         description="Seconds between controller ticks. Lower = faster reaction, more REST traffic.",
     )
+    min_spread_pct: Decimal = Field(
+        default=Decimal("0.008"),
+        description="Anti-spoof gate. Refuse to quote when (best_ask - external_best_bid) / external_best_bid < this. Default 0.008 = 0.8%.",
+    )
 
     def update_markets(self, markets: MarketDict) -> MarketDict:
         # Upstream's add_or_update signature mistypes *args as the set type
@@ -163,19 +167,36 @@ class BBOPegBuyController(ControllerBase):
         best_ask: Decimal,
     ) -> Optional[Decimal]:
         """Peg one tick above the external best bid, quantized to the exchange's
-        tick size. Returns None if there's no external bid to peg to, or if the
-        candidate would cross the ask (LIMIT_MAKER would be rejected).
+        tick size. Returns None if there's no external bid to peg to, if the
+        market spread is below the anti-spoof gate (config.min_spread_pct), or
+        if the candidate would cross the ask (LIMIT_MAKER would be rejected).
         """
         if external_best_bid is None or external_best_bid <= 0:
+            return None
+        if not best_ask:
+            return None
+        spread_pct = self._compute_spread_pct(external_best_bid, best_ask)
+        if spread_pct < self.config.min_spread_pct:
             return None
         candidate = self.market_data_provider.quantize_order_price(
             self.config.connector_name,
             self.config.trading_pair,
             external_best_bid + tick,
         )
-        if not best_ask or candidate >= best_ask:
+        if candidate >= best_ask:
             return None
         return candidate
+
+    def _compute_spread_pct(
+        self, external_best_bid: Decimal, best_ask: Decimal
+    ) -> Decimal:
+        """Return (best_ask - external_best_bid) / external_best_bid.
+
+        This is the anti-spoof gate input: a spoofer that pushes the visible
+        best bid up toward the ask compresses this value. Caller must ensure
+        external_best_bid > 0.
+        """
+        return (best_ask - external_best_bid) / external_best_bid
 
     def determine_executor_actions(self) -> List[ExecutorAction]:
         self._update_fill_latch()

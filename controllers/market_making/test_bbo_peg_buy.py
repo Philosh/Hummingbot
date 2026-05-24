@@ -112,6 +112,9 @@ def _make_controller_with_market(
         trading_pair="XNO-USDT",
         total_amount_quote=Decimal("20"),
         update_interval=0.5,
+        # Anti-spoof gate disabled so these tests isolate peg/quantize math.
+        # Gate behavior is covered separately in dedicated gate tests.
+        min_spread_pct=Decimal("0"),
     )
     market_data_provider = MagicMock(spec=MarketDataProvider)
     rules = MagicMock()
@@ -493,6 +496,9 @@ class TestBBOPegBuyComputeTargetPrice(unittest.TestCase):
             trading_pair="XNO-USDT",
             total_amount_quote=Decimal("20"),
             update_interval=0.5,
+            # Anti-spoof gate disabled so these tests isolate peg/quantize math.
+            # Gate behavior is covered separately in dedicated gate tests.
+            min_spread_pct=Decimal("0"),
         )
         market_data_provider = MagicMock(spec=MarketDataProvider)
         market_data_provider.quantize_order_price.side_effect = (

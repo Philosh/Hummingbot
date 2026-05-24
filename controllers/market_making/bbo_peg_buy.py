@@ -77,7 +77,9 @@ class BBOPegBuyController(ControllerBase):
         target_price: Optional[Decimal] = None
         if external_best_bid is not None and external_best_bid > 0:
             candidate = self.market_data_provider.quantize_order_price(
-                self.config.connector_name, self.config.trading_pair, external_best_bid + tick
+                self.config.connector_name,
+                self.config.trading_pair,
+                external_best_bid + tick,
             )
             # LIMIT_MAKER is rejected if it would cross — skip this tick.
             if best_ask and candidate < best_ask:
@@ -142,7 +144,9 @@ class BBOPegBuyController(ControllerBase):
         # Latch on any fill (partial or full) across our executors.
         if not self._has_filled:
             for e in self.executors_info:
-                executed = e.custom_info.get("executed_amount_base") if e.custom_info else None
+                executed = (
+                    e.custom_info.get("executed_amount_base") if e.custom_info else None
+                )
                 if executed is not None and Decimal(str(executed)) > 0:
                     self._has_filled = True
                     break

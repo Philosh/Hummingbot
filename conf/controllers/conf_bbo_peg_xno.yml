@@ -9,9 +9,13 @@ trading_pair: XNO-USDT
 # resting order). Order size = this / quoted price.
 total_amount_quote: 20
 
-# Seconds between controller ticks. Lower = faster reaction to book moves,
-# more REST traffic.
-update_interval: 0.5
+# Seconds between controller ticks. Lower = faster reaction, more REST traffic.
+# Bumped from 0.5 -> 2.0 to give the exchange order book WebSocket time to
+# reflect our cancels before the next walker pass. With 0.5s, we observed a
+# self-chase loop where our just-cancelled orders still showed in the book
+# and the walker treated them as external bids -> chased ourselves up by 1
+# tick repeatedly. 2s gives the cancel time to clear.
+update_interval: 2.0
 
 # Anti-spoof gate. Refuse to quote when the external market spread
 # (best_ask - external_best_bid) / external_best_bid is below this.

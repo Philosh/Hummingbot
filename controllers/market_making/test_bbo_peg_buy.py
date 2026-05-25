@@ -1526,6 +1526,204 @@ class TestBBOPegBuyLogExternalBidChange(unittest.TestCase):
         self.assertNotIn("Decimal", log_message)
 
 
+class TestBBOPegBuyLogActiveExecutorsSnapshot(unittest.TestCase):
+    """Direct unit tests for _log_active_executors_snapshot.
+
+    This log exists specifically for orphan diagnosis during live runs:
+    if the exchange UI shows an order at price X but no log line ever
+    lists X in `actives`, that order is orphaned from executors_info and
+    the controller will never emit a Stop for it.
+
+    Pins the rate-limiting (state-change only) so steady-state ticks don't
+    spam the log, the initial-snapshot logging (so we always see the first
+    state on cold start), and the executor filters (inactive / non-OrderExecutorConfig
+    / None-price executors are excluded from the snapshot, matching the
+    filters used elsewhere in the controller).
+    """
+
+    def _make_controller(self, executors=None) -> BBOPegBuyController:
+        controller, log_mock = _make_controller_for_walker(executors=executors)
+        self.log_mock = log_mock
+        return controller
+
+    # --- Log emission decisions ---
+
+    def test_logs_initial_snapshot_on_cold_start(self):
+        # Cold start (_last_logged_actives is None initial). First populated
+        # snapshot MUST log, so the live log gets a baseline reference state.
+        executor = _fake_executor(price=Decimal("0.4295"), amount=Decimal("46"))
+        executor.id = "exec-1"
+        controller = self._make_controller(executors=[executor])
+        controller._log_active_executors_snapshot()
+        self.log_mock.info.assert_called_once()
+        log_msg = self.log_mock.info.call_args[0][0]
+        self.assertIn("[bbo_peg]", log_msg)
+        self.assertIn("actives=", log_msg)
+        self.assertIn("exec-1", log_msg)
+        self.assertIn("0.4295", log_msg)
+
+    def test_does_not_log_when_snapshot_unchanged_across_ticks(self):
+        # Two consecutive calls with identical executors → one log line.
+        # Rate-limiting prevents log spam during the (frequent) steady state.
+        executor = _fake_executor(price=Decimal("0.4295"), amount=Decimal("46"))
+        executor.id = "exec-1"
+        controller = self._make_controller(executors=[executor])
+        controller._log_active_executors_snapshot()
+        controller._log_active_executors_snapshot()
+        self.assertEqual(self.log_mock.info.call_count, 1)
+
+    def test_logs_when_executor_set_changes(self):
+        # State change between ticks (new executor added) → second log fires.
+        executor1 = _fake_executor(price=Decimal("0.4295"), amount=Decimal("46"))
+        executor1.id = "exec-1"
+        controller = self._make_controller(executors=[executor1])
+        controller._log_active_executors_snapshot()
+        executor2 = _fake_executor(price=Decimal("0.4296"), amount=Decimal("46"))
+        executor2.id = "exec-2"
+        controller.executors_info.append(executor2)
+        controller._log_active_executors_snapshot()
+        self.assertEqual(self.log_mock.info.call_count, 2)
+
+    def test_logs_when_executor_price_changes(self):
+        # Same executor_id but different price → different snapshot → log.
+        # Catches the case where the executor is mutated rather than replaced.
+        executor = _fake_executor(price=Decimal("0.4295"), amount=Decimal("46"))
+        executor.id = "exec-1"
+        controller = self._make_controller(executors=[executor])
+        controller._log_active_executors_snapshot()
+        executor.config.price = Decimal("0.4296")
+        controller._log_active_executors_snapshot()
+        self.assertEqual(self.log_mock.info.call_count, 2)
+
+    def test_empty_initial_state_logs_then_silence_until_change(self):
+        # Cold start with NO executors. First call emits an empty-snapshot
+        # baseline log; subsequent calls (still empty) stay silent until
+        # something changes.
+        controller = self._make_controller(executors=[])
+        controller._log_active_executors_snapshot()
+        controller._log_active_executors_snapshot()
+        self.assertEqual(self.log_mock.info.call_count, 1)
+        log_msg = self.log_mock.info.call_args[0][0]
+        self.assertIn("actives=[]", log_msg)
+
+    # --- Filter rules (executor must show up only if active + valid) ---
+
+    def test_filters_inactive_and_invalid_executors_from_snapshot(self):
+        # The snapshot must mirror the controller's executors_info filters
+        # exactly. If an inactive/wrong-config/None-price executor leaks
+        # into the snapshot, an actually-active orphan at the same id
+        # would be misidentified as known.
+        ok = _fake_executor(price=Decimal("0.4295"), amount=Decimal("46"))
+        ok.id = "ok"
+        inactive = _fake_executor(
+            price=Decimal("0.4290"), amount=Decimal("46"), is_active=False
+        )
+        inactive.id = "inactive"
+        wrong_cfg = _fake_executor(
+            price=Decimal("0.4280"),
+            amount=Decimal("46"),
+            use_order_executor_config=False,
+        )
+        wrong_cfg.id = "wrong-cfg"
+        none_price = _fake_executor(price=None, amount=Decimal("46"))
+        none_price.id = "none-price"
+        controller = self._make_controller(
+            executors=[ok, inactive, wrong_cfg, none_price]
+        )
+        controller._log_active_executors_snapshot()
+        log_msg = self.log_mock.info.call_args[0][0]
+        self.assertIn("ok", log_msg)
+        self.assertNotIn("inactive", log_msg)
+        self.assertNotIn("wrong-cfg", log_msg)
+        self.assertNotIn("none-price", log_msg)
+
+
+class TestBBOPegBuyLogActionsEmitted(unittest.TestCase):
+    """Direct unit tests for _log_actions_emitted.
+
+    This log lets us verify that the controller IS attempting to cancel each
+    order it knows about. Pair with _log_active_executors_snapshot for orphan
+    diagnosis: if the exchange shows an order after a Stop was logged for
+    its id, the cancel failed at the framework/exchange layer (not us).
+
+    Unlike the snapshot, this is NOT rate-limited — every non-empty action
+    set gets a log line so we can audit each tick's intent. Empty action
+    sets are suppressed to avoid noise on no-op ticks.
+    """
+
+    def _make_controller(self) -> BBOPegBuyController:
+        controller, log_mock = _make_controller_for_walker()
+        self.log_mock = log_mock
+        return controller
+
+    def _make_create_action(
+        self, *, price: Decimal, executor_id: str = "new"
+    ) -> CreateExecutorAction:
+        return CreateExecutorAction(
+            controller_id="ctrl",
+            executor_config=OrderExecutorConfig(
+                id=executor_id,
+                timestamp=1.0,
+                connector_name="htx",
+                trading_pair="XNO-USDT",
+                side=TradeType.BUY,
+                amount=Decimal("46"),
+                price=price,
+                execution_strategy=ExecutionStrategy.LIMIT_MAKER,
+            ),
+        )
+
+    # --- Empty-vs-non-empty gating ---
+
+    def test_does_not_log_when_actions_list_is_empty(self):
+        # No-op tick → no log line. Avoids spamming the log on every idle tick.
+        controller = self._make_controller()
+        controller._log_actions_emitted([])
+        self.log_mock.info.assert_not_called()
+
+    # --- Stop content ---
+
+    def test_logs_stop_executor_ids(self):
+        # Each Stop's executor_id must appear in the log so we can grep for
+        # which orders the controller TRIED to cancel.
+        controller = self._make_controller()
+        stop1 = StopExecutorAction(controller_id="ctrl", executor_id="exec-1")
+        stop2 = StopExecutorAction(controller_id="ctrl", executor_id="exec-2")
+        controller._log_actions_emitted([stop1, stop2])
+        self.log_mock.info.assert_called_once()
+        log_msg = self.log_mock.info.call_args[0][0]
+        self.assertIn("stops=", log_msg)
+        self.assertIn("exec-1", log_msg)
+        self.assertIn("exec-2", log_msg)
+
+    # --- Create content ---
+
+    def test_logs_create_prices(self):
+        # Each Create's intended price must appear in the log so we can
+        # see what target the controller asked the framework to place.
+        controller = self._make_controller()
+        create = self._make_create_action(price=Decimal("0.4296"))
+        controller._log_actions_emitted([create])
+        self.log_mock.info.assert_called_once()
+        log_msg = self.log_mock.info.call_args[0][0]
+        self.assertIn("creates=", log_msg)
+        self.assertIn("0.4296", log_msg)
+
+    # --- Mixed action set ---
+
+    def test_logs_stops_and_creates_in_single_line(self):
+        # Typical action mix: cancel-and-replace. Both halves must land in
+        # the same log line so the diagnostic is one greppable tick event.
+        controller = self._make_controller()
+        stop = StopExecutorAction(controller_id="ctrl", executor_id="old-id")
+        create = self._make_create_action(price=Decimal("0.4297"))
+        controller._log_actions_emitted([stop, create])
+        self.log_mock.info.assert_called_once()
+        log_msg = self.log_mock.info.call_args[0][0]
+        self.assertIn("old-id", log_msg)
+        self.assertIn("0.4297", log_msg)
+
+
 class TestBBOPegBuyBuildCreateAction(unittest.TestCase):
     """Direct unit tests for _build_create_action in isolation.
 
@@ -2339,10 +2537,10 @@ class TestBBOPegBuyDetermineExecutorActions(unittest.TestCase):
 class TestBBOPegBuyDowngradeTrapScenario(IsolatedAsyncioWrapperTestCase):
     """End-to-end integration test for the 'stuck at 0.4295' downgrade trap.
 
-    Dual of TestBBOPegBuyAntiSpoofScenario:
-      - Anti-spoof  = gate + cancel-on-None composition (compressed-spread case)
-      - Downgrade   = controller stale-detection + NoClamp pass-through
-                      (healthy spread, BUY LIMIT_MAKER intent ABOVE current_best_bid)
+    Composes controller stale-detection with NoClampOrderExecutor's
+    pass-through for BUY LIMIT_MAKER orders where the intended price is
+    ABOVE current_best_bid. This is the healthy-spread case — the anti-spoof
+    gate plays no role here.
 
     Reproduces production log 21:47:55 exactly:
       - 92 XNO of external bids at 0.4295 + our 46 XNO at the same level

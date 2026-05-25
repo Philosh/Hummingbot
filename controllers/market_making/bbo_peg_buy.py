@@ -54,8 +54,8 @@ class BBOPegBuyConfig(ControllerConfigBase):
     connector_name: str = Field(default="htx")
     trading_pair: str = Field(default="XNO-USDT")
     update_interval: float = Field(
-        default=0.5,
-        description="Seconds between controller ticks. Lower = faster reaction, more REST traffic.",
+        default=2.0,
+        description="Seconds between controller ticks. Lower = faster reaction, more REST traffic. Default 2.0s gives the exchange order book WebSocket time to reflect our cancels before the next walker pass, avoiding the cancel-lag self-chase loop where ghost orders look like external bids.",
     )
     min_spread_pct: Decimal = Field(
         default=Decimal("0.02"),
@@ -84,6 +84,11 @@ class BBOPegBuyController(ControllerBase):
         # Cache of the anti-spoof gate's last state, so we only log on
         # blocked <-> cleared transitions. False = not currently gated.
         self._gate_blocked: bool = False
+        # Cache of the last logged (executor_id, price) snapshot of active
+        # executors. None on the very first tick so the initial snapshot
+        # always logs. Used by _log_active_executors_snapshot to detect
+        # orphaned exchange orders that aren't tracked in executors_info.
+        self._last_logged_actives: Optional[List[Tuple[str, float]]] = None
 
     async def update_processed_data(self):
         rules = self.market_data_provider.get_trading_rules(
@@ -243,6 +248,7 @@ class BBOPegBuyController(ControllerBase):
 
     def determine_executor_actions(self) -> List[ExecutorAction]:
         self._update_fill_latch()
+        self._log_active_executors_snapshot()
 
         target_price: Optional[Decimal] = self.processed_data.get("target_price")
         if target_price is None:
@@ -253,13 +259,16 @@ class BBOPegBuyController(ControllerBase):
             # leaves the gate toothless against the spoof pattern it exists
             # to defend against.
             actives = [e for e in self.executors_info if e.is_active]
-            return self._build_stop_actions(actives)
+            actions = self._build_stop_actions(actives)
+            self._log_actions_emitted(actions)
+            return actions
 
         stale, in_tolerance = self._categorize_active_orders(target_price)
-        actions: List[ExecutorAction] = self._build_stop_actions(stale)
+        actions = self._build_stop_actions(stale)
 
         # One-shot: never create another order once we've had any fill.
         if self._has_filled:
+            self._log_actions_emitted(actions)
             return actions
 
         if not in_tolerance:
@@ -267,7 +276,54 @@ class BBOPegBuyController(ControllerBase):
             if create is not None:
                 actions.append(create)
 
+        self._log_actions_emitted(actions)
         return actions
+
+    def _log_active_executors_snapshot(self) -> None:
+        """Emit a forensic INFO line whenever the set of (executor_id, price)
+        pairs for active executors changes. Rate-limited to state changes only
+        so steady-state ticks don't spam the log.
+
+        This is the orphan-detection signal: if the exchange UI shows an order
+        at price X but no log line ever lists X in `actives`, that order is
+        orphaned from executors_info — the controller doesn't know about it
+        and will never emit a Stop to cancel it.
+        """
+        snapshot: List[Tuple[str, float]] = sorted(
+            (str(e.id), float(e.config.price))
+            for e in self.executors_info
+            if e.is_active
+            and isinstance(e.config, OrderExecutorConfig)
+            and e.config.price is not None
+        )
+        if snapshot == self._last_logged_actives:
+            return
+        self.logger().info(f"[bbo_peg] actives={snapshot}")
+        self._last_logged_actives = snapshot
+
+    def _log_actions_emitted(self, actions: List[ExecutorAction]) -> None:
+        """Emit a forensic INFO line summarizing the actions emitted this tick.
+        Only fires when actions is non-empty so no-op ticks don't spam.
+
+        Combined with _log_active_executors_snapshot, lets us verify that the
+        controller IS attempting to cancel each order it knows about — if the
+        exchange still shows an order after a Stop was logged for its
+        executor_id, the cancel failed at the framework/exchange layer (not
+        the controller's fault).
+        """
+        if not actions:
+            return
+        stops = [
+            a.executor_id for a in actions if isinstance(a, StopExecutorAction)
+        ]
+        creates = [
+            float(a.executor_config.price)
+            for a in actions
+            if isinstance(a, CreateExecutorAction)
+            and isinstance(a.executor_config, OrderExecutorConfig)
+            and a.executor_config.price is not None
+        ]
+        self.logger().info(f"[bbo_peg] emit stops={stops} creates={creates}")
 
     def _update_fill_latch(self) -> None:
         """Set _has_filled if any executor reports executed_amount_base > 0.

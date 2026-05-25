@@ -2708,6 +2708,112 @@ class TestBBOPegSellUpdateFillLatch(unittest.TestCase):
         controller._update_fill_latch()
         self.assertTrue(controller._has_filled)
 
+    # --- max_fills > 1 (N-shot) ---
+
+    def _make_controller_with_max_fills(self, max_fills: int) -> BBOPegSellController:
+        config = BBOPegSellConfig(
+            id="test",
+            controller_name="bbo_peg_sell",
+            connector_name="htx",
+            trading_pair="XNO-USDT",
+            total_amount_quote=Decimal("20"),
+            update_interval=0.5,
+            max_fills=max_fills,
+        )
+        return BBOPegSellController(
+            config=config,
+            market_data_provider=MagicMock(spec=MarketDataProvider),
+            actions_queue=AsyncMock(spec=asyncio.Queue),
+        )
+
+    def _fake_executor_with_fill_and_id(
+        self, *, eid: str, executed_amount_base
+    ) -> ExecutorInfo:
+        executor = self._fake_executor_with_fill(
+            executed_amount_base=executed_amount_base
+        )
+        executor.id = eid
+        return executor
+
+    def test_max_fills_two_does_not_trip_on_first_distinct_fill(self):
+        # With max_fills=2, a single filled executor should not gate the
+        # controller — we still want a second create/fill cycle.
+        controller = self._make_controller_with_max_fills(max_fills=2)
+        setattr(controller, "executors_info", [
+            self._fake_executor_with_fill_and_id(
+                eid="exec-1", executed_amount_base=Decimal("5")
+            ),
+        ])
+        controller._update_fill_latch()
+        self.assertEqual(controller._fill_count, 1)
+        self.assertFalse(controller._has_filled)
+
+    def test_max_fills_two_trips_on_second_distinct_fill(self):
+        # Two distinct executors with fills → count=2, latch trips.
+        controller = self._make_controller_with_max_fills(max_fills=2)
+        setattr(controller, "executors_info", [
+            self._fake_executor_with_fill_and_id(
+                eid="exec-1", executed_amount_base=Decimal("5")
+            ),
+            self._fake_executor_with_fill_and_id(
+                eid="exec-2", executed_amount_base=Decimal("3")
+            ),
+        ])
+        controller._update_fill_latch()
+        self.assertEqual(controller._fill_count, 2)
+        self.assertTrue(controller._has_filled)
+
+    def test_same_executor_filled_twice_counted_only_once(self):
+        # CRITICAL: partial fills accumulate on the same executor across
+        # ticks. The latch must NOT double-count — otherwise N partials on
+        # a single order would prematurely gate at max_fills=N.
+        controller = self._make_controller_with_max_fills(max_fills=3)
+        executor = self._fake_executor_with_fill_and_id(
+            eid="exec-1", executed_amount_base=Decimal("1")
+        )
+        setattr(controller, "executors_info", [executor])
+        # Simulate three ticks where the same executor stays in the list
+        # and the partial-fill amount grows.
+        controller._update_fill_latch()
+        executor.custom_info = {"executed_amount_base": Decimal("3")}
+        controller._update_fill_latch()
+        executor.custom_info = {"executed_amount_base": Decimal("5")}
+        controller._update_fill_latch()
+        self.assertEqual(controller._fill_count, 1)
+        self.assertFalse(controller._has_filled)
+
+    def test_max_fills_five_reached_by_five_distinct_executors(self):
+        # Production scenario for ERA (max_fills=5): five distinct fills
+        # across the process lifetime → gated. Sixth attempt would be
+        # blocked even if a sixth executor reports a fill later.
+        controller = self._make_controller_with_max_fills(max_fills=5)
+        executors = [
+            self._fake_executor_with_fill_and_id(
+                eid=f"exec-{i}", executed_amount_base=Decimal("1")
+            )
+            for i in range(5)
+        ]
+        setattr(controller, "executors_info", executors)
+        controller._update_fill_latch()
+        self.assertEqual(controller._fill_count, 5)
+        self.assertTrue(controller._has_filled)
+
+    def test_fill_count_persists_when_executor_disappears(self):
+        # Counted IDs are tracked separately from current executors_info,
+        # so a fill counted at tick N stays counted at tick N+1 even if
+        # the framework cleans up that executor.
+        controller = self._make_controller_with_max_fills(max_fills=3)
+        e1 = self._fake_executor_with_fill_and_id(
+            eid="exec-1", executed_amount_base=Decimal("5")
+        )
+        setattr(controller, "executors_info", [e1])
+        controller._update_fill_latch()
+        self.assertEqual(controller._fill_count, 1)
+        # Executor cleaned up; controller still remembers the count.
+        setattr(controller, "executors_info", [])
+        controller._update_fill_latch()
+        self.assertEqual(controller._fill_count, 1)
+
 
 class TestBBOPegSellDetermineExecutorActions(unittest.TestCase):
     """End-to-end orchestration tests for determine_executor_actions.
@@ -2724,10 +2830,13 @@ class TestBBOPegSellDetermineExecutorActions(unittest.TestCase):
         target_price: Optional[Decimal] = Decimal("0.4381"),
         executors: Optional[List[ExecutorInfo]] = None,
         has_filled: bool = False,
+        max_fills: int = 1,
         quantize_amount_side_effect=None,
     ) -> BBOPegSellController:
         """Builds a controller with processed_data, executors_info, and
         _has_filled pre-populated. quantize_order_amount defaults to identity.
+        max_fills controls the N-shot gate threshold (default 1 = original
+        one-shot behavior).
         """
         config = BBOPegSellConfig(
             id="test-controller-id",
@@ -2736,6 +2845,7 @@ class TestBBOPegSellDetermineExecutorActions(unittest.TestCase):
             trading_pair="XNO-USDT",
             total_amount_quote=Decimal("20"),
             update_interval=0.5,
+            max_fills=max_fills,
         )
         market_data_provider = MagicMock(spec=MarketDataProvider)
         market_data_provider.quantize_order_amount.side_effect = (
@@ -2903,6 +3013,88 @@ class TestBBOPegSellDetermineExecutorActions(unittest.TestCase):
         )
         actions = controller.determine_executor_actions()
         self.assertEqual(actions, [])
+
+    # --- N-shot fill latch (max_fills > 1) end-to-end ---
+
+    def test_max_fills_five_cold_start_emits_create(self):
+        # Sanity: max_fills=5 doesn't change cold-start behavior — fill_count
+        # is 0, so a fresh tick with target + no executors emits a Create.
+        controller = self._make_controller(
+            target_price=Decimal("0.4381"),
+            max_fills=5,
+        )
+        actions = controller.determine_executor_actions()
+        self.assertEqual(len(actions), 1)
+        self.assertIsInstance(actions[0], CreateExecutorAction)
+
+    def test_max_fills_five_emits_create_after_first_fill(self):
+        # CRITICAL: this is the headline ERA behavior. With max_fills=5 and
+        # ONE prior fill recorded, the controller is NOT yet gated — it
+        # must still re-quote (Stop stale + Create new) so we can capture
+        # round-trip 2 through 5.
+        stale = _fake_executor(price=Decimal("0.4380"), amount=Decimal("45"))
+        stale.id = "stale-1"
+        controller = self._make_controller(
+            target_price=Decimal("0.4381"),
+            executors=[stale],
+            max_fills=5,
+        )
+        # Simulate "we've had one fill earlier in the session" by pre-seeding
+        # the count directly (avoids needing a filled executor in this list).
+        controller._fill_count = 1
+        controller._counted_fill_executor_ids.add("prior-filled-exec")
+        actions = controller.determine_executor_actions()
+        stops = [a for a in actions if isinstance(a, StopExecutorAction)]
+        creates = [a for a in actions if isinstance(a, CreateExecutorAction)]
+        self.assertEqual(len(stops), 1)
+        self.assertEqual(len(creates), 1)
+
+    def test_max_fills_five_gates_after_fifth_fill(self):
+        # With fill_count == max_fills, the controller behaves identically to
+        # the old one-shot gated state: Stops emitted for stale (cleanup),
+        # but no new Creates.
+        stale = _fake_executor(price=Decimal("0.4380"), amount=Decimal("45"))
+        stale.id = "stale-1"
+        controller = self._make_controller(
+            target_price=Decimal("0.4381"),
+            executors=[stale],
+            max_fills=5,
+        )
+        controller._fill_count = 5
+        controller._counted_fill_executor_ids.update(
+            f"prior-{i}" for i in range(5)
+        )
+        actions = controller.determine_executor_actions()
+        stops = [a for a in actions if isinstance(a, StopExecutorAction)]
+        creates = [a for a in actions if isinstance(a, CreateExecutorAction)]
+        self.assertEqual(len(stops), 1)
+        self.assertEqual(creates, [])
+
+    def test_max_fills_five_with_live_fill_increments_then_emits_create(self):
+        # End-to-end: _update_fill_latch runs FIRST inside
+        # determine_executor_actions. A live filled executor in the list
+        # should increment _fill_count from 2 → 3 (still below max_fills=5),
+        # and a Create is still emitted because we haven't hit the gate.
+        filled = MagicMock()
+        filled.is_active = False
+        filled.custom_info = {"executed_amount_base": "5"}
+        filled.config = MagicMock(spec=OrderExecutorConfig)
+        filled.config.price = Decimal("0.4381")
+        filled.id = "newly-filled"
+        controller = self._make_controller(
+            target_price=Decimal("0.4381"),
+            executors=[cast(ExecutorInfo, filled)],
+            max_fills=5,
+        )
+        # Two prior fills already counted (different IDs).
+        controller._fill_count = 2
+        controller._counted_fill_executor_ids.update({"prior-a", "prior-b"})
+        actions = controller.determine_executor_actions()
+        # Latch incremented past the new fill to 3, still < 5.
+        self.assertEqual(controller._fill_count, 3)
+        self.assertFalse(controller._has_filled)
+        creates = [a for a in actions if isinstance(a, CreateExecutorAction)]
+        self.assertEqual(len(creates), 1)
 
 
 class TestBBOPegSellDowngradeTrapScenario(IsolatedAsyncioWrapperTestCase):

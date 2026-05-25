@@ -11,7 +11,8 @@ the strategy layer.
 
 Mirror of bbo_peg_buy.py. Runs as an independent controller instance;
 inventory coupling between buy and sell sides is intentionally absent
-(each side has its own _has_filled latch). Designed to run alongside
+(each side has its own _fill_count latch with configurable max_fills,
+default 1 = one-shot). Designed to run alongside
 bbo_peg_buy in the same process — both share the NoClampOrderExecutor
 wire-up (idempotent), and each controller's executors_info is filtered
 by the framework to its own controller_id, so there's no cross-side
@@ -28,7 +29,7 @@ exclusion before computing the gate.
 """
 
 from decimal import Decimal
-from typing import Dict, List, Optional, Tuple
+from typing import Dict, List, Optional, Set, Tuple
 
 from pydantic import Field
 
@@ -80,6 +81,11 @@ class BBOPegSellConfig(ControllerConfigBase):
         default=2.0,
         description="How long to remember each just-cancelled order's (price, amount) so the walker keeps treating it as ours during the cancel-propagation lag window. Without this, the walker sees our own just-cancelled orders in the exchange book WebSocket and chases them as if they were external asks. Set to 0 to disable.",
     )
+    max_fills: int = Field(
+        default=1,
+        ge=1,
+        description="Number of distinct fills allowed before the controller stops creating new orders for the process lifetime. Default 1 preserves the original one-shot behavior. Each unique executor is counted at most once (partial fills don't inflate the count). Raise to allow the controller to re-quote and capture more spread per process; lower not allowed (use a separate stop signal).",
+    )
 
     def update_markets(self, markets: MarketDict) -> MarketDict:
         # Upstream's add_or_update signature mistypes *args as the set type
@@ -102,9 +108,14 @@ class BBOPegSellController(ControllerBase):
         kwargs.setdefault("update_interval", config.update_interval)
         super().__init__(config, *args, **kwargs)
         self.config = config
-        # One-shot latch. Set on first detected fill (partial or full).
-        # Never reset within a process lifetime.
-        self._has_filled: bool = False
+        # N-shot latch. Counts distinct executors that have reported a non-zero
+        # fill. The controller stops creating new orders once _fill_count
+        # reaches config.max_fills. Default max_fills=1 preserves the original
+        # one-shot behavior. Never decremented within a process lifetime.
+        self._fill_count: int = 0
+        # IDs of executors already counted toward _fill_count, so partial
+        # fills on the same executor don't inflate the count across ticks.
+        self._counted_fill_executor_ids: Set[str] = set()
         # Cache of the last logged external_best_ask value, so we only emit
         # a diagnostic line when the chosen price actually changes.
         self._last_logged_external_best_ask: Optional[Decimal] = None
@@ -351,8 +362,8 @@ class BBOPegSellController(ControllerBase):
         self._record_pending_cancels(stale)
         actions = self._build_stop_actions(stale)
 
-        # One-shot: never create another order once we've had any fill.
-        if self._has_filled:
+        # N-shot: never create another order once we've hit max_fills.
+        if self._fill_count >= self.config.max_fills:
             self._log_actions_emitted(actions)
             return actions
 
@@ -411,18 +422,44 @@ class BBOPegSellController(ControllerBase):
         self.logger().info(f"{self.config.log_prefix} emit stops={stops} creates={creates}")
 
     def _update_fill_latch(self) -> None:
-        """Set _has_filled if any executor reports executed_amount_base > 0.
-        Once set, never reset within a process lifetime.
+        """Increment _fill_count for each NEW executor reporting executed_amount_base > 0.
+        Each executor id is counted at most once (tracked in
+        _counted_fill_executor_ids), so partial fills accumulating across
+        ticks don't inflate the count. Once _fill_count reaches
+        config.max_fills, _has_filled becomes True and the controller stops
+        emitting new Creates.
         """
-        if self._has_filled:
-            return
         for e in self.executors_info:
+            eid = str(e.id)
+            if eid in self._counted_fill_executor_ids:
+                continue
             executed = (
                 e.custom_info.get("executed_amount_base") if e.custom_info else None
             )
             if executed is not None and Decimal(str(executed)) > 0:
-                self._has_filled = True
-                return
+                self._fill_count += 1
+                self._counted_fill_executor_ids.add(eid)
+
+    @property
+    def _has_filled(self) -> bool:
+        """Backward-compatible alias: True when fill count has reached
+        max_fills (controller is fully gated, no more Creates). With the
+        default max_fills=1, this is exactly the original one-shot latch.
+        """
+        return self._fill_count >= self.config.max_fills
+
+    @_has_filled.setter
+    def _has_filled(self, value: bool) -> None:
+        """Backward-compatible setter for tests that pre-set the latch
+        state directly. True → fill_count := max_fills (fully gated);
+        False → fill_count := 0 (re-armed, counted IDs also cleared so
+        previously-counted executors can be re-counted).
+        """
+        if value:
+            self._fill_count = self.config.max_fills
+        else:
+            self._fill_count = 0
+            self._counted_fill_executor_ids.clear()
 
     def _categorize_active_orders(
         self, target_price: Decimal

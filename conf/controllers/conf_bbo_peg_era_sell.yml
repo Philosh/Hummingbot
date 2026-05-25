@@ -29,5 +29,9 @@ min_spread_pct: 0.020
 # Same 2.0s cancel-debounce as XNO/WAVES.
 cancel_debounce_seconds: 2.0
 
+# N-shot fill latch (see buy-side config for the rationale). Symmetric
+# with the buy side so the sell controller can also re-quote up to 5 times.
+max_fills: 5
+
 manual_kill_switch: false
 initial_positions: []

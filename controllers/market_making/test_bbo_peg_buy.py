@@ -1751,7 +1751,10 @@ class TestBBOPegBuyLogExternalBidChange(unittest.TestCase):
             my_volume_by_price={Decimal("0.4380"): Decimal("30")},
         )
         log_message = self.log_mock.info.call_args[0][0]
-        self.assertIn("[bbo_peg]", log_message)
+        # Log prefix now includes the base asset for multi-token disambiguation.
+        # Match the open-bracket + space (e.g. "[bbo_peg XNO]") to keep the
+        # assertion working regardless of which trading_pair the test uses.
+        self.assertIn("[bbo_peg ", log_message)
         self.assertIn("external_best_bid", log_message)
         self.assertIn("top5_bids", log_message)
         self.assertIn("my_volume", log_message)
@@ -1802,7 +1805,9 @@ class TestBBOPegBuyLogActiveExecutorsSnapshot(unittest.TestCase):
         controller._log_active_executors_snapshot()
         self.log_mock.info.assert_called_once()
         log_msg = self.log_mock.info.call_args[0][0]
-        self.assertIn("[bbo_peg]", log_msg)
+        # Log prefix now includes the base asset; see TestBBOPegBuyLogExternalBidChange
+        # for the rationale.
+        self.assertIn("[bbo_peg ", log_msg)
         self.assertIn("actives=", log_msg)
         self.assertIn("exec-1", log_msg)
         self.assertIn("0.4295", log_msg)

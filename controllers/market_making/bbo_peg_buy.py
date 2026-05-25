@@ -71,6 +71,14 @@ class BBOPegBuyConfig(ControllerConfigBase):
         # itself instead of a set element; mirrors MarketMakingControllerConfigBase.
         return markets.add_or_update(self.connector_name, self.trading_pair)  # type: ignore[arg-type]  # ty: ignore[invalid-argument-type]
 
+    @property
+    def log_prefix(self) -> str:
+        """Log prefix including the base asset, so multi-token deployments
+        (e.g. XNO + WAVES + ERA running together) can be disambiguated with
+        a single grep. Format: '[bbo_peg <BASE>]'.
+        """
+        return f"[bbo_peg {self.trading_pair.split('-')[0]}]"
+
 
 class BBOPegBuyController(ControllerBase):
     config: BBOPegBuyConfig
@@ -233,7 +241,7 @@ class BBOPegBuyController(ControllerBase):
             return
         my_vol_str = {float(k): float(v) for k, v in my_volume_by_price.items()}
         self.logger().info(
-            f"[bbo_peg] external_best_bid={result} "
+            f"{self.config.log_prefix} external_best_bid={result} "
             f"top5_bids={top_levels} my_volume={my_vol_str}"
         )
         self._last_logged_external_best_bid = result
@@ -295,7 +303,7 @@ class BBOPegBuyController(ControllerBase):
             return
         state = "blocked" if gate_blocked else "cleared"
         self.logger().info(
-            f"[bbo_peg] gate_{state} external_best_bid={external_best_bid} "
+            f"{self.config.log_prefix} gate_{state} external_best_bid={external_best_bid} "
             f"best_ask={best_ask} spread={spread_pct} "
             f"min={self.config.min_spread_pct}"
         )
@@ -355,7 +363,7 @@ class BBOPegBuyController(ControllerBase):
         )
         if snapshot == self._last_logged_actives:
             return
-        self.logger().info(f"[bbo_peg] actives={snapshot}")
+        self.logger().info(f"{self.config.log_prefix} actives={snapshot}")
         self._last_logged_actives = snapshot
 
     def _log_actions_emitted(self, actions: List[ExecutorAction]) -> None:
@@ -380,7 +388,7 @@ class BBOPegBuyController(ControllerBase):
             and isinstance(a.executor_config, OrderExecutorConfig)
             and a.executor_config.price is not None
         ]
-        self.logger().info(f"[bbo_peg] emit stops={stops} creates={creates}")
+        self.logger().info(f"{self.config.log_prefix} emit stops={stops} creates={creates}")
 
     def _update_fill_latch(self) -> None:
         """Set _has_filled if any executor reports executed_amount_base > 0.

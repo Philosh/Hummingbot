@@ -1765,7 +1765,8 @@ class TestBBOPegSellLogExternalAskChange(unittest.TestCase):
             my_volume_by_price={Decimal("0.4380"): Decimal("30")},
         )
         log_message = self.log_mock.info.call_args[0][0]
-        self.assertIn("[bbo_peg_sell]", log_message)
+        # Log prefix now includes the base asset for multi-token disambiguation.
+        self.assertIn("[bbo_peg_sell ", log_message)
         self.assertIn("external_best_ask", log_message)
         self.assertIn("top5_asks", log_message)
         self.assertIn("my_volume", log_message)
@@ -1816,7 +1817,8 @@ class TestBBOPegSellLogActiveExecutorsSnapshot(unittest.TestCase):
         controller._log_active_executors_snapshot()
         self.log_mock.info.assert_called_once()
         log_msg = self.log_mock.info.call_args[0][0]
-        self.assertIn("[bbo_peg_sell]", log_msg)
+        # Log prefix now includes the base asset; see analogous comment above.
+        self.assertIn("[bbo_peg_sell ", log_msg)
         self.assertIn("actives=", log_msg)
         self.assertIn("exec-1", log_msg)
         self.assertIn("0.4295", log_msg)

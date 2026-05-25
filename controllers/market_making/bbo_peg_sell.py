@@ -86,6 +86,14 @@ class BBOPegSellConfig(ControllerConfigBase):
         # itself instead of a set element; mirrors MarketMakingControllerConfigBase.
         return markets.add_or_update(self.connector_name, self.trading_pair)  # type: ignore[arg-type]  # ty: ignore[invalid-argument-type]
 
+    @property
+    def log_prefix(self) -> str:
+        """Log prefix including the base asset, so multi-token deployments
+        (e.g. XNO + WAVES + ERA running together) can be disambiguated with
+        a single grep. Format: '[bbo_peg_sell <BASE>]'.
+        """
+        return f"[bbo_peg_sell {self.trading_pair.split('-')[0]}]"
+
 
 class BBOPegSellController(ControllerBase):
     config: BBOPegSellConfig
@@ -253,7 +261,7 @@ class BBOPegSellController(ControllerBase):
             return
         my_vol_str = {float(k): float(v) for k, v in my_volume_by_price.items()}
         self.logger().info(
-            f"[bbo_peg_sell] external_best_ask={result} "
+            f"{self.config.log_prefix} external_best_ask={result} "
             f"top5_asks={top_levels} my_volume={my_vol_str}"
         )
         self._last_logged_external_best_ask = result
@@ -315,7 +323,7 @@ class BBOPegSellController(ControllerBase):
             return
         state = "blocked" if gate_blocked else "cleared"
         self.logger().info(
-            f"[bbo_peg_sell] gate_{state} external_best_ask={external_best_ask} "
+            f"{self.config.log_prefix} gate_{state} external_best_ask={external_best_ask} "
             f"best_bid={best_bid} spread={spread_pct} "
             f"min={self.config.min_spread_pct}"
         )
@@ -375,7 +383,7 @@ class BBOPegSellController(ControllerBase):
         )
         if snapshot == self._last_logged_actives:
             return
-        self.logger().info(f"[bbo_peg_sell] actives={snapshot}")
+        self.logger().info(f"{self.config.log_prefix} actives={snapshot}")
         self._last_logged_actives = snapshot
 
     def _log_actions_emitted(self, actions: List[ExecutorAction]) -> None:
@@ -400,7 +408,7 @@ class BBOPegSellController(ControllerBase):
             and isinstance(a.executor_config, OrderExecutorConfig)
             and a.executor_config.price is not None
         ]
-        self.logger().info(f"[bbo_peg_sell] emit stops={stops} creates={creates}")
+        self.logger().info(f"{self.config.log_prefix} emit stops={stops} creates={creates}")
 
     def _update_fill_latch(self) -> None:
         """Set _has_filled if any executor reports executed_amount_base > 0.
@@ -491,7 +499,7 @@ class BBOPegSellController(ControllerBase):
         if available < required_amount:
             if not self._balance_insufficient_logged:
                 self.logger().warning(
-                    f"[bbo_peg_sell] insufficient {base_asset} balance: "
+                    f"{self.config.log_prefix} insufficient {base_asset} balance: "
                     f"have {available}, need {required_amount}. "
                     f"Suppressing further warnings until balance recovers."
                 )
@@ -499,7 +507,7 @@ class BBOPegSellController(ControllerBase):
             return False
         if self._balance_insufficient_logged:
             self.logger().info(
-                f"[bbo_peg_sell] {base_asset} balance recovered: "
+                f"{self.config.log_prefix} {base_asset} balance recovered: "
                 f"have {available}, need {required_amount}. Resuming quotes."
             )
             self._balance_insufficient_logged = False

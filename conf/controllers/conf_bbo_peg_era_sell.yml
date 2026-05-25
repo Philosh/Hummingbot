@@ -12,8 +12,11 @@ trading_pair: ERA-USDT
 # transition.
 total_amount_quote: 20
 
-# Same 2.0s tick interval as the buy side.
-update_interval: 2.0
+# 1.0s tick interval, matching the buy side. Faster than the XNO/WAVES
+# default (2.0s) for quicker reaction. cancel_debounce_seconds (2.0)
+# still exceeds this interval so the walker continues to dedupe ghost
+# cancels through the WebSocket propagation lag.
+update_interval: 1.0
 
 # Anti-spoof gate calibrated for ERA's ~3.5% natural spread (see the buy
 # config for the rationale). Same threshold on both sides keeps behavior

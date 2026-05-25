@@ -9,10 +9,13 @@ trading_pair: ERA-USDT
 # resting order). Order size = this / quoted price.
 total_amount_quote: 20
 
-# Seconds between controller ticks. Same 2.0s as XNO/WAVES — gives the
-# exchange order book WebSocket time to reflect our cancels before the
-# next walker pass.
-update_interval: 2.0
+# Seconds between controller ticks. ERA runs at 1.0s (faster than the
+# default 2.0s used by XNO/WAVES) to react more quickly to the leapfrog
+# spoof pattern on this pair. Safe because cancel_debounce_seconds (2.0)
+# is still longer than this interval — the walker still treats just-
+# cancelled orders as ours through the WebSocket propagation lag, so the
+# self-chase loop stays defused.
+update_interval: 1.0
 
 # Anti-spoof gate, calibrated for ERA's ~3.5% natural spread.
 # Rule of thumb: gate ~60-70% of typical natural spread. 2.0% leaves ~1.5%

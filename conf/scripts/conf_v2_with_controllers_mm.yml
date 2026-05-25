@@ -6,7 +6,7 @@
 # Per-token gate thresholds (min_spread_pct, calibrated ~60% of natural spread):
 #   XNO   = 0.020 (natural ~1.5-2%)
 #   WAVES = 0.014 (natural ~2.4%)
-#   ERA   = 0.020 (natural ~3.5%)
+#   ERA   = 0.015 (lowered from 0.020 after observing live spread compress to 1.5-2%)
 #
 # Per-token max_fills (process-lifetime fill cap):
 #   XNO   = 1 (default; one-shot)

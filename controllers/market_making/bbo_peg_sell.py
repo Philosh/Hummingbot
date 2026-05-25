@@ -103,6 +103,11 @@ class BBOPegSellController(ControllerBase):
         # Cache of the anti-spoof gate's last state, so we only log on
         # blocked <-> cleared transitions. False = not currently gated.
         self._gate_blocked: bool = False
+        # Cache of the pre-flight balance check's last state, so we only log
+        # on insufficient <-> sufficient transitions. False = balance was OK
+        # last time we tried to create. Without this rate limit, an empty
+        # account would emit a "not enough budget" warning every tick.
+        self._balance_insufficient_logged: bool = False
         # Cache of the last logged (executor_id, price) snapshot of active
         # executors. None on the very first tick so the initial snapshot
         # always logs. Used by _log_active_executors_snapshot to detect
@@ -443,7 +448,10 @@ class BBOPegSellController(ControllerBase):
         self, target_price: Decimal
     ) -> Optional[CreateExecutorAction]:
         """Build a LIMIT_MAKER sell at target_price.
-        Returns None if quantized amount is zero (book/balance can't support an order).
+        Returns None if quantized amount is zero (book can't support an
+        order) or if the account's available base balance is below the
+        required amount (pre-flight check that prevents the framework's
+        downstream INSUFFICIENT_BALANCE log spam at every tick).
         """
         amount = self.market_data_provider.quantize_order_amount(
             self.config.connector_name,
@@ -451,6 +459,8 @@ class BBOPegSellController(ControllerBase):
             self.config.total_amount_quote / target_price,
         )
         if amount <= 0:
+            return None
+        if not self._has_sufficient_base_balance(amount):
             return None
         return CreateExecutorAction(
             controller_id=self.config.id,
@@ -464,3 +474,33 @@ class BBOPegSellController(ControllerBase):
                 execution_strategy=ExecutionStrategy.LIMIT_MAKER,
             ),
         )
+
+    def _has_sufficient_base_balance(self, required_amount: Decimal) -> bool:
+        """Read the connector's available base balance and compare to the
+        amount we're about to attempt to sell. Returns False if insufficient
+        (caller skips emitting the Create).
+
+        Emits a state-transition log: warning on insufficient->sufficient,
+        info on recovery. Rate-limited via _balance_insufficient_logged so
+        an empty account doesn't spam one warning per tick.
+        """
+        base_asset = self.config.trading_pair.split("-")[0]
+        available = self.market_data_provider.get_available_balance(
+            self.config.connector_name, base_asset
+        )
+        if available < required_amount:
+            if not self._balance_insufficient_logged:
+                self.logger().warning(
+                    f"[bbo_peg_sell] insufficient {base_asset} balance: "
+                    f"have {available}, need {required_amount}. "
+                    f"Suppressing further warnings until balance recovers."
+                )
+                self._balance_insufficient_logged = True
+            return False
+        if self._balance_insufficient_logged:
+            self.logger().info(
+                f"[bbo_peg_sell] {base_asset} balance recovered: "
+                f"have {available}, need {required_amount}. Resuming quotes."
+            )
+            self._balance_insufficient_logged = False
+        return True

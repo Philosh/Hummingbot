@@ -2013,7 +2013,11 @@ class TestBBOPegSellBuildCreateAction(unittest.TestCase):
         market_data_provider.quantize_order_amount.side_effect = (
             quantize_amount_side_effect or (lambda _c, _p, amount: amount)
         )
-        market_data_provider.time.return_value = timestamp
+        market_data_provider.time.return_value = timestamp  # type: ignore[attr-defined]  # ty: ignore[unresolved-attribute]  # pyright: ignore[reportAttributeAccessIssue]
+        # Default to ample base balance so tests not specifically about the
+        # pre-flight balance check don't have to mock it. Balance-specific
+        # tests override this on the returned controller's MDP.
+        market_data_provider.get_available_balance.return_value = Decimal("1000000")  # type: ignore[attr-defined]  # ty: ignore[unresolved-attribute]  # pyright: ignore[reportAttributeAccessIssue]
         self.market_data_provider_mock = market_data_provider
         return BBOPegSellController(
             config=config,
@@ -2121,6 +2125,109 @@ class TestBBOPegSellBuildCreateAction(unittest.TestCase):
         )
         result = controller._build_create_action(target_price=Decimal("0.4381"))
         self.assertIsNone(result)
+
+    # --- Pre-flight balance check ---
+
+    def test_returns_none_when_base_balance_insufficient(self):
+        # Production scenario: the account has no XNO (or less than the
+        # quantized amount). The framework's OrderExecutor would otherwise
+        # log "Not enough budget to open position" on every tick. The
+        # controller-level guard prevents that by skipping the Create
+        # entirely.
+        controller = self._make_controller()
+        log_mock = MagicMock()
+        setattr(controller, "logger", MagicMock(return_value=log_mock))
+        # target=0.4381, quote=20 -> required ≈ 45.65 XNO. Account has 10.
+        controller.market_data_provider.get_available_balance.return_value = Decimal(  # type: ignore[attr-defined]  # ty: ignore[unresolved-attribute]  # pyright: ignore[reportAttributeAccessIssue]
+            "10"
+        )
+        result = controller._build_create_action(target_price=Decimal("0.4381"))
+        self.assertIsNone(result)
+
+    def test_returns_create_action_when_base_balance_exactly_sufficient(self):
+        # Boundary: balance == required must NOT block (strict `<`, not `<=`).
+        # If a refactor changes the comparator we silently lose every order
+        # at the wire-edge.
+        controller = self._make_controller(
+            quantize_amount_side_effect=lambda _c, _p, _amount: Decimal("46"),
+        )
+        controller.market_data_provider.get_available_balance.return_value = Decimal(  # type: ignore[attr-defined]  # ty: ignore[unresolved-attribute]  # pyright: ignore[reportAttributeAccessIssue]
+            "46"
+        )
+        result = controller._build_create_action(target_price=Decimal("0.4381"))
+        self.assertIsInstance(result, CreateExecutorAction)
+
+    def test_balance_check_reads_base_asset_from_trading_pair(self):
+        # The base asset is parsed by splitting on "-". XNO-USDT → "XNO".
+        # Pin the parse so a refactor to e.g. "/" doesn't silently read the
+        # wrong asset's balance.
+        controller = self._make_controller()
+        controller._build_create_action(target_price=Decimal("0.4381"))
+        controller.market_data_provider.get_available_balance.assert_called_with(  # type: ignore[attr-defined]  # ty: ignore[unresolved-attribute]  # pyright: ignore[reportAttributeAccessIssue]
+            "htx", "XNO"
+        )
+
+    def test_insufficient_balance_log_fires_once_per_episode(self):
+        # Rate-limiting: an empty account on every tick must NOT spam the
+        # log. First insufficient → 1 warning. Second insufficient → no new
+        # log. Recovery resets the latch (covered separately).
+        controller = self._make_controller()
+        log_mock = MagicMock()
+        setattr(controller, "logger", MagicMock(return_value=log_mock))
+        controller.market_data_provider.get_available_balance.return_value = Decimal(  # type: ignore[attr-defined]  # ty: ignore[unresolved-attribute]  # pyright: ignore[reportAttributeAccessIssue]
+            "0"
+        )
+        controller._build_create_action(target_price=Decimal("0.4381"))
+        controller._build_create_action(target_price=Decimal("0.4381"))
+        controller._build_create_action(target_price=Decimal("0.4381"))
+        self.assertEqual(log_mock.warning.call_count, 1)
+        warning_msg = log_mock.warning.call_args[0][0]
+        self.assertIn("insufficient", warning_msg.lower())
+        self.assertIn("XNO", warning_msg)
+
+    def test_recovery_emits_info_log_and_resets_latch(self):
+        # Transition: insufficient → sufficient must log a single recovery
+        # info line and re-arm the warning so a subsequent insufficient
+        # episode logs again. Mirrors the gate state-transition pattern.
+        controller = self._make_controller()
+        log_mock = MagicMock()
+        setattr(controller, "logger", MagicMock(return_value=log_mock))
+        controller.market_data_provider.get_available_balance.return_value = Decimal(  # type: ignore[attr-defined]  # ty: ignore[unresolved-attribute]  # pyright: ignore[reportAttributeAccessIssue]
+            "0"
+        )
+        controller._build_create_action(
+            target_price=Decimal("0.4381")
+        )  # blocked → warn
+        controller.market_data_provider.get_available_balance.return_value = Decimal(  # type: ignore[attr-defined]  # ty: ignore[unresolved-attribute]  # pyright: ignore[reportAttributeAccessIssue]
+            "100"
+        )
+        controller._build_create_action(
+            target_price=Decimal("0.4381")
+        )  # recovered → info
+        self.assertEqual(log_mock.warning.call_count, 1)
+        self.assertEqual(log_mock.info.call_count, 1)
+        info_msg = log_mock.info.call_args[0][0]
+        self.assertIn("recovered", info_msg.lower())
+        # Re-arm check: drop balance again → another warning fires.
+        controller.market_data_provider.get_available_balance.return_value = Decimal(  # type: ignore[attr-defined]  # ty: ignore[unresolved-attribute]  # pyright: ignore[reportAttributeAccessIssue]
+            "0"
+        )
+        controller._build_create_action(target_price=Decimal("0.4381"))
+        self.assertEqual(log_mock.warning.call_count, 2)
+
+    def test_no_log_on_cold_start_with_sufficient_balance(self):
+        # Cold start has _balance_insufficient_logged=False. A sufficient
+        # balance on the very first call must NOT emit any "recovered" info
+        # log — that would only make sense after a prior insufficient state.
+        controller = self._make_controller()
+        log_mock = MagicMock()
+        setattr(controller, "logger", MagicMock(return_value=log_mock))
+        controller.market_data_provider.get_available_balance.return_value = Decimal(  # type: ignore[attr-defined]  # ty: ignore[unresolved-attribute]  # pyright: ignore[reportAttributeAccessIssue]
+            "1000"
+        )
+        controller._build_create_action(target_price=Decimal("0.4381"))
+        log_mock.warning.assert_not_called()
+        log_mock.info.assert_not_called()
 
 
 class TestBBOPegSellBuildStopActions(unittest.TestCase):
@@ -2632,7 +2739,10 @@ class TestBBOPegSellDetermineExecutorActions(unittest.TestCase):
         market_data_provider.quantize_order_amount.side_effect = (
             quantize_amount_side_effect or (lambda _c, _p, amount: amount)
         )
-        market_data_provider.time.return_value = 1700000000.0
+        market_data_provider.time.return_value = 1700000000.0  # type: ignore[attr-defined]  # ty: ignore[unresolved-attribute]  # pyright: ignore[reportAttributeAccessIssue]
+        # Default to ample base balance — see TestBBOPegSellBuildCreateAction
+        # for the rationale and tests that override this.
+        market_data_provider.get_available_balance.return_value = Decimal("1000000")  # type: ignore[attr-defined]  # ty: ignore[unresolved-attribute]  # pyright: ignore[reportAttributeAccessIssue]
         controller = BBOPegSellController(
             config=config,
             market_data_provider=market_data_provider,
@@ -2876,7 +2986,8 @@ class TestBBOPegSellDowngradeTrapScenario(IsolatedAsyncioWrapperTestCase):
         market_data_provider.quantize_order_amount.side_effect = lambda _c, _p, amount: (
             amount
         )
-        market_data_provider.time.return_value = 1700000000.0
+        market_data_provider.time.return_value = 1700000000.0  # type: ignore[attr-defined]  # ty: ignore[unresolved-attribute]  # pyright: ignore[reportAttributeAccessIssue]
+        market_data_provider.get_available_balance.return_value = Decimal("1000000")  # type: ignore[attr-defined]  # ty: ignore[unresolved-attribute]  # pyright: ignore[reportAttributeAccessIssue]
 
         controller = BBOPegSellController(
             config=config,

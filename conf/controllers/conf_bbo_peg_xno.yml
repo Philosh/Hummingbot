@@ -15,8 +15,8 @@ update_interval: 0.5
 
 # Anti-spoof gate. Refuse to quote when the external market spread
 # (best_ask - external_best_bid) / external_best_bid is below this.
-# Default 0.008 = 0.8%.
-min_spread_pct: 0.008
+# Default 0.02 = 2%.
+min_spread_pct: 0.02
 
 manual_kill_switch: false
 initial_positions: []

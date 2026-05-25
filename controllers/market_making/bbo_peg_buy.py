@@ -43,8 +43,8 @@ class BBOPegBuyConfig(ControllerConfigBase):
         description="Seconds between controller ticks. Lower = faster reaction, more REST traffic.",
     )
     min_spread_pct: Decimal = Field(
-        default=Decimal("0.008"),
-        description="Anti-spoof gate. Refuse to quote when (best_ask - external_best_bid) / external_best_bid < this. Default 0.008 = 0.8%.",
+        default=Decimal("0.02"),
+        description="Anti-spoof gate. Refuse to quote when (best_ask - external_best_bid) / external_best_bid < this. Default 0.02 = 2%.",
     )
 
     def update_markets(self, markets: MarketDict) -> MarketDict:
@@ -231,7 +231,14 @@ class BBOPegBuyController(ControllerBase):
 
         target_price: Optional[Decimal] = self.processed_data.get("target_price")
         if target_price is None:
-            return []
+            # No valid target (no external bid, would cross ask, or anti-spoof
+            # gate fired). Cancel any standing order rather than leaving a
+            # quote exposed during the unsafe window. The cost is occasional
+            # cancel-churn on transient market-data gaps; the alternative
+            # leaves the gate toothless against the spoof pattern it exists
+            # to defend against.
+            actives = [e for e in self.executors_info if e.is_active]
+            return self._build_stop_actions(actives)
 
         stale, in_tolerance = self._categorize_active_orders(target_price)
         actions: List[ExecutorAction] = self._build_stop_actions(stale)

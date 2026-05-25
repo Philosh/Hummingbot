@@ -637,6 +637,482 @@ class TestBBOPegBuyComputeTargetPrice(unittest.TestCase):
         self.market_data_provider_mock.quantize_order_price.assert_not_called()
 
 
+class TestBBOPegBuyComputeSpreadPct(unittest.TestCase):
+    """Direct unit tests for _compute_spread_pct in isolation.
+
+    Pure function: (best_ask - external_best_bid) / external_best_bid.
+    Pins the formula (denominator MUST be external_best_bid — not best_ask
+    or mid-price), the Decimal return type (so the gate comparison against
+    a Decimal threshold never silently coerces through float), and the
+    sign convention on inverted books.
+    """
+
+    def _make_controller(self) -> BBOPegBuyController:
+        config = BBOPegBuyConfig(
+            id="test",
+            controller_name="bbo_peg_buy",
+            connector_name="htx",
+            trading_pair="XNO-USDT",
+            total_amount_quote=Decimal("20"),
+            update_interval=0.5,
+        )
+        return BBOPegBuyController(
+            config=config,
+            market_data_provider=MagicMock(spec=MarketDataProvider),
+            actions_queue=AsyncMock(spec=asyncio.Queue),
+        )
+
+    # --- Happy path: standard spreads ---
+
+    def test_healthy_wide_spread_returns_expected_ratio(self):
+        # 5% spread: (0.42 - 0.40) / 0.40 = 0.05
+        controller = self._make_controller()
+        result = controller._compute_spread_pct(
+            external_best_bid=Decimal("0.40"),
+            best_ask=Decimal("0.42"),
+        )
+        self.assertEqual(result, Decimal("0.05"))
+
+    def test_tight_one_tick_spread_returns_tiny_ratio(self):
+        # Typical spoof shape: ask one tick above bid.
+        # (0.4296 - 0.4295) / 0.4295 ≈ 0.000233 — well below the 2% gate.
+        controller = self._make_controller()
+        result = controller._compute_spread_pct(
+            external_best_bid=Decimal("0.4295"),
+            best_ask=Decimal("0.4296"),
+        )
+        self.assertGreater(result, Decimal("0"))
+        self.assertLess(result, Decimal("0.001"))
+
+    def test_exact_two_percent_spread(self):
+        # Boundary value matching the production gate threshold (0.02).
+        # bid 1.00, ask 1.02 → exactly 0.02.
+        controller = self._make_controller()
+        result = controller._compute_spread_pct(
+            external_best_bid=Decimal("1.00"),
+            best_ask=Decimal("1.02"),
+        )
+        self.assertEqual(result, Decimal("0.02"))
+
+    # --- Edge: degenerate / boundary cases ---
+
+    def test_equal_bid_and_ask_returns_zero(self):
+        # Spread = 0 exactly. Must not raise and must return Decimal("0").
+        # The caller relies on this returning a comparable value so the
+        # gate fires cleanly (0 < 0.02) instead of crashing the tick.
+        controller = self._make_controller()
+        result = controller._compute_spread_pct(
+            external_best_bid=Decimal("0.4380"),
+            best_ask=Decimal("0.4380"),
+        )
+        self.assertEqual(result, Decimal("0"))
+
+    def test_inverted_book_returns_negative(self):
+        # Ask BELOW bid (crossed/inverted book) → negative spread. The
+        # function must return the signed value as-is (NOT abs()) so the
+        # gate blocks (negative < min_spread_pct is trivially true) instead
+        # of waving through a pathological book.
+        controller = self._make_controller()
+        result = controller._compute_spread_pct(
+            external_best_bid=Decimal("0.4400"),
+            best_ask=Decimal("0.4380"),
+        )
+        self.assertLess(result, Decimal("0"))
+
+    # --- Critical: formula contract (negative assertions) ---
+
+    def test_denominator_is_external_best_bid_not_best_ask(self):
+        # CRITICAL: pin the denominator with a differential expectation.
+        # bid=0.40, ask=0.50:
+        #   correct (bid denom):   (0.50 - 0.40) / 0.40 = 0.25
+        #   wrong   (ask denom):   (0.50 - 0.40) / 0.50 = 0.20
+        # A typo swapping the denominator silently shifts gate behavior;
+        # the not-equal assertion catches that exact regression.
+        controller = self._make_controller()
+        result = controller._compute_spread_pct(
+            external_best_bid=Decimal("0.40"),
+            best_ask=Decimal("0.50"),
+        )
+        self.assertEqual(result, Decimal("0.25"))
+        self.assertNotEqual(result, Decimal("0.20"))
+
+    def test_denominator_is_not_mid_price(self):
+        # CRITICAL: a common alt-formulation uses mid-price as denominator.
+        # bid=0.40, ask=0.60 → mid = 0.50
+        #   correct (bid denom): (0.60 - 0.40) / 0.40 = 0.50
+        #   wrong   (mid denom): (0.60 - 0.40) / 0.50 = 0.40
+        # Differential test pins the bid-denominator choice.
+        controller = self._make_controller()
+        result = controller._compute_spread_pct(
+            external_best_bid=Decimal("0.40"),
+            best_ask=Decimal("0.60"),
+        )
+        self.assertEqual(result, Decimal("0.50"))
+        self.assertNotEqual(result, Decimal("0.40"))
+
+    def test_returns_decimal_not_float(self):
+        # CRITICAL: the gate compares spread_pct < self.config.min_spread_pct
+        # where min_spread_pct is a Decimal. If a refactor ever returns a
+        # float, sub-tick precision drift could flip the gate decision at
+        # the boundary. Pin the Decimal return type explicitly.
+        controller = self._make_controller()
+        result = controller._compute_spread_pct(
+            external_best_bid=Decimal("0.40"),
+            best_ask=Decimal("0.42"),
+        )
+        self.assertIsInstance(result, Decimal)
+        self.assertNotIsInstance(result, float)
+
+    def test_raises_on_zero_bid_denominator(self):
+        # CONTRACT: the docstring says "Caller must ensure external_best_bid > 0".
+        # If someone removes that caller-side guard, division by zero MUST
+        # raise — not silently return 0/inf, which would either bypass the
+        # gate (returning 0 → 0 < 0.02 fires gate, fine) or worse, return
+        # something falsy that confuses callers. Pin that the function
+        # itself does NOT defensively swallow — defense lives at the call
+        # site (_compute_target_price already guards external_best_bid <= 0).
+        controller = self._make_controller()
+        with self.assertRaises(ZeroDivisionError):
+            controller._compute_spread_pct(
+                external_best_bid=Decimal("0"),
+                best_ask=Decimal("0.42"),
+            )
+
+    # --- Precision / regression ---
+
+    def test_exact_decimal_precision_preserved(self):
+        # Tick-precision math: bid=0.4380, ask=0.4385 → diff=0.0005, then
+        # 0.0005 / 0.4380. The result must be the EXACT Decimal computation
+        # with no float rounding. If anyone converts intermediates to float,
+        # this differential expectation breaks.
+        controller = self._make_controller()
+        result = controller._compute_spread_pct(
+            external_best_bid=Decimal("0.4380"),
+            best_ask=Decimal("0.4385"),
+        )
+        expected = (Decimal("0.4385") - Decimal("0.4380")) / Decimal("0.4380")
+        self.assertEqual(result, expected)
+
+    def test_scale_invariant_across_price_magnitudes(self):
+        # Sanity: a ~2% spread on a $0.5 asset returns the same ratio as a
+        # ~2% spread on a $5000 asset. Differential test confirms the
+        # formula is truly ratio-based, not absolute-difference-based —
+        # i.e., the same gate threshold works across XNO and BTC pairs.
+        controller = self._make_controller()
+        low = controller._compute_spread_pct(
+            external_best_bid=Decimal("0.50"),
+            best_ask=Decimal("0.51"),
+        )
+        high = controller._compute_spread_pct(
+            external_best_bid=Decimal("5000"),
+            best_ask=Decimal("5100"),
+        )
+        self.assertEqual(low, high)
+
+
+class TestBBOPegBuyComputeTargetPriceGate(unittest.TestCase):
+    """Tests for _compute_target_price focused on the anti-spoof gate.
+
+    Sibling to TestBBOPegBuyComputeTargetPrice, which holds the gate
+    OFF (min_spread_pct=0) to isolate peg/quantize math. This class flips
+    the gate ON and pins:
+      - Gate-fire short-circuit (returns None, skips quantize entirely)
+      - Strict-less-than threshold boundary (spread == threshold → allow)
+      - Custom thresholds actually drive behavior (knob not hardcoded)
+      - State-transition logging from inside the full flow
+      - Guard ordering (bid-validity short-circuits BEFORE gate)
+    """
+
+    def _make_controller(
+        self,
+        *,
+        min_spread_pct: Decimal = Decimal("0.02"),
+        quantize_side_effect=None,
+    ) -> BBOPegBuyController:
+        """Builds a controller with a configurable gate threshold. Stashes
+        the mocked MDP and log mock so tests can assert on quantize calls
+        and log emissions without going through bound attributes.
+        """
+        config = BBOPegBuyConfig(
+            id="test",
+            controller_name="bbo_peg_buy",
+            connector_name="htx",
+            trading_pair="XNO-USDT",
+            total_amount_quote=Decimal("20"),
+            update_interval=0.5,
+            min_spread_pct=min_spread_pct,
+        )
+        market_data_provider = MagicMock(spec=MarketDataProvider)
+        market_data_provider.quantize_order_price.side_effect = (
+            quantize_side_effect or (lambda _c, _p, price: price)
+        )
+        self.market_data_provider_mock = market_data_provider
+        controller = BBOPegBuyController(
+            config=config,
+            market_data_provider=market_data_provider,
+            actions_queue=AsyncMock(spec=asyncio.Queue),
+        )
+        log_mock = MagicMock()
+        setattr(controller, "logger", MagicMock(return_value=log_mock))
+        self.log_mock = log_mock
+        return controller
+
+    # --- Gate fire / clear branches ---
+
+    def test_gate_fires_returns_none_when_spread_below_threshold(self):
+        # The headline spoof-defense path: bid 1 tick below ask (spread
+        # ≈0.023%) vs default 2% threshold → blocked → None. This is what
+        # protects the bot from pegging right next to a spoofer's fake bid.
+        controller = self._make_controller(min_spread_pct=Decimal("0.02"))
+        result = controller._compute_target_price(
+            external_best_bid=Decimal("0.4295"),
+            tick=Decimal("0.0001"),
+            best_ask=Decimal("0.4296"),
+        )
+        self.assertIsNone(result)
+
+    def test_gate_clears_returns_candidate_when_spread_above_threshold(self):
+        # Healthy 5% spread vs 2% threshold → gate doesn't fire → return
+        # the pegged candidate (0.40 + 0.0001).
+        controller = self._make_controller(min_spread_pct=Decimal("0.02"))
+        result = controller._compute_target_price(
+            external_best_bid=Decimal("0.40"),
+            tick=Decimal("0.0001"),
+            best_ask=Decimal("0.42"),
+        )
+        self.assertEqual(result, Decimal("0.4001"))
+
+    # --- Threshold boundary (strict-less-than contract) ---
+
+    def test_spread_exactly_at_threshold_does_not_fire_gate(self):
+        # CRITICAL: gate uses `spread_pct < self.config.min_spread_pct`
+        # (strict). Spread == threshold → ALLOWED. If someone changes < to
+        # <=, this fails. Pins the deliberate "at the safety margin is fine,
+        # below it is not" choice.
+        # bid=1.00, ask=1.02 → spread = 0.02 == threshold 0.02 → allowed.
+        controller = self._make_controller(min_spread_pct=Decimal("0.02"))
+        result = controller._compute_target_price(
+            external_best_bid=Decimal("1.00"),
+            tick=Decimal("0.01"),
+            best_ask=Decimal("1.02"),
+        )
+        self.assertEqual(result, Decimal("1.01"))
+
+    def test_spread_just_below_threshold_fires_gate(self):
+        # Differential vs the equality test: spread one ulp below threshold
+        # MUST fire. Pins the strict-less-than as a tight boundary.
+        # spread = (1.0199 - 1.00) / 1.00 = 0.0199 < 0.02 → blocked.
+        controller = self._make_controller(min_spread_pct=Decimal("0.02"))
+        result = controller._compute_target_price(
+            external_best_bid=Decimal("1.00"),
+            tick=Decimal("0.0001"),
+            best_ask=Decimal("1.0199"),
+        )
+        self.assertIsNone(result)
+
+    # --- Threshold knob: config is actually honored ---
+
+    def test_gate_disabled_when_min_spread_pct_is_zero(self):
+        # Confirm the gate-off escape hatch used by TestBBOPegBuyComputeTargetPrice
+        # is real. A 0.4% spread that would block at 2% passes here.
+        # spread = (0.4296 - 0.4280) / 0.4280 ≈ 0.00374, candidate = 0.4281.
+        controller = self._make_controller(min_spread_pct=Decimal("0"))
+        result = controller._compute_target_price(
+            external_best_bid=Decimal("0.4280"),
+            tick=Decimal("0.0001"),
+            best_ask=Decimal("0.4296"),
+        )
+        self.assertEqual(result, Decimal("0.4281"))
+
+    def test_stricter_threshold_blocks_normally_acceptable_spread(self):
+        # 3% spread is healthy at the default 2% threshold but BLOCKED at a
+        # custom 5% threshold. Differential pins that the config value drives
+        # the decision (not a hardcoded 2% somewhere).
+        # spread = (1.03 - 1.00) / 1.00 = 0.03 < 0.05 → blocked.
+        controller = self._make_controller(min_spread_pct=Decimal("0.05"))
+        result = controller._compute_target_price(
+            external_best_bid=Decimal("1.00"),
+            tick=Decimal("0.01"),
+            best_ask=Decimal("1.03"),
+        )
+        self.assertIsNone(result)
+
+    # --- Critical: order of operations (gate short-circuits BEFORE quantize) ---
+
+    def test_gate_fires_does_not_call_quantize(self):
+        # CRITICAL: when the gate fires, the function must return BEFORE
+        # calling quantize_order_price. On some MDPs the quantize call
+        # involves a HTTP roundtrip — wasting one per blocked tick adds up
+        # in tight markets. Pin the short-circuit.
+        controller = self._make_controller(min_spread_pct=Decimal("0.02"))
+        controller._compute_target_price(
+            external_best_bid=Decimal("0.4295"),
+            tick=Decimal("0.0001"),
+            best_ask=Decimal("0.4296"),
+        )
+        self.market_data_provider_mock.quantize_order_price.assert_not_called()
+
+    def test_gate_clears_calls_quantize(self):
+        # Mirror of above: healthy spread → quantize IS called. Together
+        # with the negative test, pins the conditional ordering.
+        controller = self._make_controller(min_spread_pct=Decimal("0.02"))
+        controller._compute_target_price(
+            external_best_bid=Decimal("0.40"),
+            tick=Decimal("0.0001"),
+            best_ask=Decimal("0.42"),
+        )
+        self.market_data_provider_mock.quantize_order_price.assert_called_once()
+
+    # --- Edge: pathological spreads ---
+
+    def test_zero_spread_fires_gate(self):
+        # Equal bid and ask → spread = 0 < any positive threshold → blocked.
+        # Note: the crossing-ask guard further down would ALSO catch this
+        # (candidate=ask), but the gate fires first in the function flow —
+        # the None return here is gate-driven, not cross-driven.
+        controller = self._make_controller(min_spread_pct=Decimal("0.02"))
+        result = controller._compute_target_price(
+            external_best_bid=Decimal("0.4380"),
+            tick=Decimal("0.0001"),
+            best_ask=Decimal("0.4380"),
+        )
+        self.assertIsNone(result)
+
+    def test_inverted_book_fires_gate(self):
+        # Ask BELOW bid (crossed/inverted) → negative spread → blocked.
+        # Pins that the strict-less-than handles negative spreads correctly
+        # (negative < any positive threshold is trivially true).
+        controller = self._make_controller(min_spread_pct=Decimal("0.02"))
+        result = controller._compute_target_price(
+            external_best_bid=Decimal("0.4400"),
+            tick=Decimal("0.0001"),
+            best_ask=Decimal("0.4380"),
+        )
+        self.assertIsNone(result)
+
+    # --- Logging side-effect (state transition rate-limiting) ---
+
+    def test_gate_blocked_log_emitted_on_first_block(self):
+        # Cold start (_gate_blocked=False initially) → gate fires → state
+        # transitions False→True → exactly one log line with "gate_blocked".
+        controller = self._make_controller(min_spread_pct=Decimal("0.02"))
+        controller._compute_target_price(
+            external_best_bid=Decimal("0.4295"),
+            tick=Decimal("0.0001"),
+            best_ask=Decimal("0.4296"),
+        )
+        self.log_mock.info.assert_called_once()
+        log_msg = self.log_mock.info.call_args[0][0]
+        self.assertIn("gate_blocked", log_msg)
+
+    def test_gate_not_logged_when_blocked_state_persists(self):
+        # Two consecutive blocked ticks → log fires ONCE (on the transition),
+        # not twice. Rate-limiting prevents log spam in naturally-tight
+        # markets that sit below the threshold for sustained periods.
+        controller = self._make_controller(min_spread_pct=Decimal("0.02"))
+        for _ in range(2):
+            controller._compute_target_price(
+                external_best_bid=Decimal("0.4295"),
+                tick=Decimal("0.0001"),
+                best_ask=Decimal("0.4296"),
+            )
+        self.assertEqual(self.log_mock.info.call_count, 1)
+
+    def test_gate_not_logged_when_blocked_state_persists_across_different_prices(self):
+        # CRITICAL: rate-limiting tracks ONLY the blocked/cleared boolean,
+        # NOT the (bid, ask) tuple. Two blocked ticks with DIFFERENT prices
+        # still produce one log line. Catches accidental "log every blocked
+        # price change" regressions where someone keys the cache on prices.
+        controller = self._make_controller(min_spread_pct=Decimal("0.02"))
+        controller._compute_target_price(
+            external_best_bid=Decimal("0.4295"),
+            tick=Decimal("0.0001"),
+            best_ask=Decimal("0.4296"),
+        )
+        controller._compute_target_price(
+            external_best_bid=Decimal("0.5000"),
+            tick=Decimal("0.0001"),
+            best_ask=Decimal("0.5001"),
+        )
+        self.assertEqual(self.log_mock.info.call_count, 1)
+
+    def test_gate_logs_blocked_then_cleared_on_state_transitions(self):
+        # Block then clear → two log lines, in order: "gate_blocked",
+        # "gate_cleared". Pins both transition directions emit, and the
+        # message body distinguishes them (so log readers can grep).
+        controller = self._make_controller(min_spread_pct=Decimal("0.02"))
+        controller._compute_target_price(
+            external_best_bid=Decimal("0.4295"),
+            tick=Decimal("0.0001"),
+            best_ask=Decimal("0.4296"),
+        )
+        controller._compute_target_price(
+            external_best_bid=Decimal("0.40"),
+            tick=Decimal("0.0001"),
+            best_ask=Decimal("0.42"),
+        )
+        self.assertEqual(self.log_mock.info.call_count, 2)
+        first_msg = self.log_mock.info.call_args_list[0][0][0]
+        second_msg = self.log_mock.info.call_args_list[1][0][0]
+        self.assertIn("gate_blocked", first_msg)
+        self.assertIn("gate_cleared", second_msg)
+
+    def test_no_log_when_gate_stays_cleared_from_cold_start(self):
+        # Cold start has _gate_blocked=False initial. If the very first call
+        # also produces "not blocked", there's no state transition → no log.
+        # Pins that healthy markets at startup produce ZERO gate log noise.
+        controller = self._make_controller(min_spread_pct=Decimal("0.02"))
+        controller._compute_target_price(
+            external_best_bid=Decimal("0.40"),
+            tick=Decimal("0.0001"),
+            best_ask=Decimal("0.42"),
+        )
+        self.log_mock.info.assert_not_called()
+
+    # --- Critical: guard ordering (bid-validity runs BEFORE gate) ---
+
+    def test_zero_bid_short_circuits_before_gate(self):
+        # CRITICAL: external_best_bid <= 0 → return None BEFORE the gate is
+        # evaluated. If the gate ran first, _compute_spread_pct would raise
+        # ZeroDivisionError. The clean None return AND absence of log line
+        # together prove the bid-validity guard runs first.
+        controller = self._make_controller(min_spread_pct=Decimal("0.02"))
+        result = controller._compute_target_price(
+            external_best_bid=Decimal("0"),
+            tick=Decimal("0.0001"),
+            best_ask=Decimal("0.42"),
+        )
+        self.assertIsNone(result)
+        self.log_mock.info.assert_not_called()
+
+    def test_none_bid_short_circuits_before_gate(self):
+        # Same reasoning for None bid — must short-circuit before gate.
+        # If gate were entered, _compute_spread_pct(None, ...) would crash
+        # with TypeError. Pins the same guard ordering for the None case.
+        controller = self._make_controller(min_spread_pct=Decimal("0.02"))
+        result = controller._compute_target_price(
+            external_best_bid=None,
+            tick=Decimal("0.0001"),
+            best_ask=Decimal("0.42"),
+        )
+        self.assertIsNone(result)
+        self.log_mock.info.assert_not_called()
+
+    def test_zero_ask_short_circuits_before_gate(self):
+        # Falsy best_ask (0) → return None BEFORE the gate. If gate ran
+        # first with ask=0, spread_pct = -bid/bid = -1, which would block
+        # (spurious "spoof" reading). The early return ensures we just bail
+        # cleanly on missing market data instead of misclassifying it.
+        controller = self._make_controller(min_spread_pct=Decimal("0.02"))
+        result = controller._compute_target_price(
+            external_best_bid=Decimal("0.4380"),
+            tick=Decimal("0.0001"),
+            best_ask=Decimal("0"),
+        )
+        self.assertIsNone(result)
+        self.log_mock.info.assert_not_called()
+
+
 class TestBBOPegBuyWalkBidsForFirstExternal(unittest.TestCase):
     """Direct unit tests for _walk_bids_for_first_external in isolation.
 
@@ -1758,20 +2234,36 @@ class TestBBOPegBuyDetermineExecutorActions(unittest.TestCase):
 
     # --- Early return / no-target ---
 
-    def test_returns_empty_list_when_target_price_is_none(self):
-        # No target price → bail immediately, regardless of executor state.
+    def test_returns_empty_list_when_target_price_is_none_and_no_active_executors(self):
+        # No target price AND no active executors → nothing to cancel,
+        # nothing to create. Result is empty.
         controller = self._make_controller(target_price=None)
         actions = controller.determine_executor_actions()
         self.assertEqual(actions, [])
 
-    def test_does_not_emit_stops_when_target_price_is_none_even_with_stale(self):
-        # CRITICAL NEGATIVE: if target_price is None, we early-return BEFORE
-        # categorizing. So even pre-existing stale orders don't get cancelled
-        # this tick. The function returns []. This prevents accidental mass
-        # cancellation during transient market data gaps (e.g., websocket
-        # reconnect, empty book moment).
-        stale = _fake_executor(price=Decimal("0.4380"), amount=Decimal("45"))
-        controller = self._make_controller(target_price=None, executors=[stale])
+    def test_cancels_active_orders_when_target_price_is_none(self):
+        # CRITICAL: when target_price is None (no external bid, would cross
+        # ask, or anti-spoof gate fired), any active order is unsafe to
+        # leave resting — cancel it. The earlier behavior of returning []
+        # left orders exposed during exactly the suspicious windows the
+        # gate exists to guard.
+        active = _fake_executor(price=Decimal("0.4380"), amount=Decimal("45"))
+        active.id = "active-1"
+        controller = self._make_controller(target_price=None, executors=[active])
+        actions = controller.determine_executor_actions()
+        self.assertEqual(len(actions), 1)
+        action = actions[0]
+        assert isinstance(action, StopExecutorAction)
+        self.assertEqual(action.executor_id, "active-1")
+
+    def test_does_not_emit_stops_for_inactive_executors_when_target_price_is_none(self):
+        # NEGATIVE: only ACTIVE executors get cancelled in the None branch.
+        # An inactive executor (already terminal) must not generate a stop
+        # action — that would be a redundant or invalid exchange call.
+        inactive = _fake_executor(
+            price=Decimal("0.4380"), amount=Decimal("45"), is_active=False
+        )
+        controller = self._make_controller(target_price=None, executors=[inactive])
         actions = controller.determine_executor_actions()
         self.assertEqual(actions, [])
 

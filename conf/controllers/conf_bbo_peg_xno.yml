@@ -22,5 +22,13 @@ update_interval: 2.0
 # Default 0.02 = 2%.
 min_spread_pct: 0.02
 
+# How long to remember each just-cancelled order's (price, amount) so the
+# walker keeps treating it as ours during the cancel-propagation lag window.
+# Without this, the walker chases its own just-cancelled orders as if they
+# were external bids (observed at 0.5s tick: self-chase loop, climbed 1 tick
+# every 1-2 ticks). 2s covers typical HTX cancel-WebSocket latency; set to 0
+# to disable.
+cancel_debounce_seconds: 2.0
+
 manual_kill_switch: false
 initial_positions: []

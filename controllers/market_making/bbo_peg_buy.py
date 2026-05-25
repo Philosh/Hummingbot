@@ -61,6 +61,10 @@ class BBOPegBuyConfig(ControllerConfigBase):
         default=Decimal("0.02"),
         description="Anti-spoof gate. Refuse to quote when (best_ask - external_best_bid) / external_best_bid < this. Default 0.02 = 2%.",
     )
+    cancel_debounce_seconds: float = Field(
+        default=2.0,
+        description="How long to remember each just-cancelled order's (price, amount) so the walker keeps treating it as ours during the cancel-propagation lag window. Without this, the walker sees our own just-cancelled orders in the exchange book WebSocket and chases them as if they were external bids. Set to 0 to disable.",
+    )
 
     def update_markets(self, markets: MarketDict) -> MarketDict:
         # Upstream's add_or_update signature mistypes *args as the set type
@@ -89,6 +93,14 @@ class BBOPegBuyController(ControllerBase):
         # always logs. Used by _log_active_executors_snapshot to detect
         # orphaned exchange orders that aren't tracked in executors_info.
         self._last_logged_actives: Optional[List[Tuple[str, float]]] = None
+        # Pending-cancel memory keyed by executor_id, value = (price, amount,
+        # until_timestamp). When the controller emits a Stop, the executor
+        # disappears from executors_info instantly but the exchange order
+        # book WebSocket lags by ~1-2s; during that window the walker would
+        # see our just-cancelled order as an external bid and chase it.
+        # This dict lets _compute_own_volume_by_price keep subtracting the
+        # cancelled volume from the book until cancel_debounce_seconds elapses.
+        self._pending_cancels: Dict[str, Tuple[Decimal, Decimal, float]] = {}
 
     async def update_processed_data(self):
         rules = self.market_data_provider.get_trading_rules(
@@ -125,8 +137,14 @@ class BBOPegBuyController(ControllerBase):
         return result
 
     def _compute_own_volume_by_price(self) -> Dict[Decimal, Decimal]:
-        """Aggregate our active executors' volume per price level.
+        """Aggregate our active executors' volume per price level, AND any
+        pending-cancel volume still echoing in the exchange book during the
+        cancel-propagation lag window.
+
         Filters out inactive executors and non-OrderExecutorConfig configs.
+        Pending cancels past their until_timestamp are skipped (inline filter,
+        no mutation — eviction happens opportunistically in
+        _record_pending_cancels to keep the dict bounded).
         """
         my_volume_by_price: Dict[Decimal, Decimal] = {}
         for e in self.executors_info:
@@ -138,7 +156,44 @@ class BBOPegBuyController(ControllerBase):
             my_volume_by_price[cfg.price] = (
                 my_volume_by_price.get(cfg.price, Decimal("0")) + cfg.amount
             )
+        # Cancel-debounce: keep subtracting our recently-cancelled orders
+        # from the book until cancel_debounce_seconds elapses. Without this
+        # the walker chases its own ghost orders (cancel hasn't propagated
+        # to the exchange book WebSocket yet → ghost looks like external bid).
+        now = self.market_data_provider.time()
+        for price, amount, until in self._pending_cancels.values():
+            if until <= now:
+                continue
+            my_volume_by_price[price] = (
+                my_volume_by_price.get(price, Decimal("0")) + amount
+            )
         return my_volume_by_price
+
+    def _record_pending_cancels(
+        self, executors_to_stop: List[ExecutorInfo]
+    ) -> None:
+        """Record (price, amount, until_timestamp) for each executor we're
+        about to Stop, keyed by executor_id. Opportunistically evicts
+        already-expired entries to keep the dict bounded over long sessions.
+
+        Re-recording an executor that's already pending refreshes its
+        until_timestamp — useful when the framework keeps the executor in
+        is_active=True across multiple ticks while the cancel is in flight.
+        """
+        now = self.market_data_provider.time()
+        # Opportunistic eviction (safe: expired entries are ignored in
+        # _compute_own_volume_by_price anyway; this just frees memory).
+        self._pending_cancels = {
+            eid: entry
+            for eid, entry in self._pending_cancels.items()
+            if entry[2] > now
+        }
+        until = now + self.config.cancel_debounce_seconds
+        for e in executors_to_stop:
+            cfg = e.config
+            if not isinstance(cfg, OrderExecutorConfig) or cfg.price is None:
+                continue
+            self._pending_cancels[str(e.id)] = (cfg.price, cfg.amount, until)
 
     def _walk_bids_for_first_external(
         self, my_volume_by_price: Dict[Decimal, Decimal]
@@ -259,11 +314,13 @@ class BBOPegBuyController(ControllerBase):
             # leaves the gate toothless against the spoof pattern it exists
             # to defend against.
             actives = [e for e in self.executors_info if e.is_active]
+            self._record_pending_cancels(actives)
             actions = self._build_stop_actions(actives)
             self._log_actions_emitted(actions)
             return actions
 
         stale, in_tolerance = self._categorize_active_orders(target_price)
+        self._record_pending_cancels(stale)
         actions = self._build_stop_actions(stale)
 
         # One-shot: never create another order once we've had any fill.

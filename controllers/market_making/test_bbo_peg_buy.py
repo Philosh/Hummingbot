@@ -1398,6 +1398,251 @@ class TestBBOPegBuyComputeOwnVolumeByPrice(unittest.TestCase):
         self.assertNotEqual(result[Decimal("0.4380")], Decimal("30"))
         self.assertEqual(result[Decimal("0.4380")], Decimal("60"))
 
+    # --- Cancel-debounce: pending cancels are included in own_volume ---
+
+    def test_pending_cancel_within_window_included_in_own_volume(self):
+        # CORE FIX: a just-cancelled order at 0.4414 still echoes in the
+        # exchange book WebSocket due to cancel-lag. We track it in
+        # _pending_cancels; _compute_own_volume_by_price must include it
+        # so the walker keeps subtracting it from the book. Without this,
+        # the walker chases its own ghost (the production self-chase loop).
+        controller, _ = _make_controller_for_walker(executors=[])
+        controller.market_data_provider.time.return_value = 1000.0
+        controller._pending_cancels["pending-1"] = (
+            Decimal("0.4414"),
+            Decimal("45.31"),
+            1002.0,  # until = now+2s, still valid
+        )
+        result = controller._compute_own_volume_by_price()
+        self.assertEqual(result, {Decimal("0.4414"): Decimal("45.31")})
+
+    def test_pending_cancel_past_expiry_excluded_from_own_volume(self):
+        # Expired pending cancels MUST be filtered out — once the debounce
+        # window has passed, the exchange book should have caught up and the
+        # ghost order is presumed gone. If we keep subtracting it forever
+        # we'd permanently lose visibility of that price level.
+        controller, _ = _make_controller_for_walker(executors=[])
+        controller.market_data_provider.time.return_value = 1000.0
+        controller._pending_cancels["expired"] = (
+            Decimal("0.4414"),
+            Decimal("45.31"),
+            999.0,  # until < now → expired
+        )
+        result = controller._compute_own_volume_by_price()
+        self.assertEqual(result, {})
+
+    def test_pending_cancel_exactly_at_expiry_excluded(self):
+        # Boundary: until == now is EXCLUDED (strict > comparison).
+        # Pin the strict-greater-than so a refactor to >= doesn't silently
+        # extend the debounce window by one tick.
+        controller, _ = _make_controller_for_walker(executors=[])
+        controller.market_data_provider.time.return_value = 1000.0
+        controller._pending_cancels["edge"] = (
+            Decimal("0.4414"),
+            Decimal("45.31"),
+            1000.0,  # until == now → drop
+        )
+        result = controller._compute_own_volume_by_price()
+        self.assertEqual(result, {})
+
+    def test_pending_cancel_at_same_price_as_active_executor_sums(self):
+        # A pending cancel at the same price as an existing active executor
+        # must SUM with the active volume, not overwrite or be overwritten.
+        # Real scenario: we just placed at 0.4296 (active) while a previous
+        # 0.4296 quote is still pending-cancel during the lag window.
+        controller, _ = _make_controller_for_walker(
+            executors=[_fake_executor(price=Decimal("0.4296"), amount=Decimal("46"))]
+        )
+        controller.market_data_provider.time.return_value = 1000.0
+        controller._pending_cancels["pending-old"] = (
+            Decimal("0.4296"),
+            Decimal("46.5"),
+            1002.0,
+        )
+        result = controller._compute_own_volume_by_price()
+        self.assertEqual(result, {Decimal("0.4296"): Decimal("92.5")})
+
+    def test_multiple_pending_cancels_at_same_price_sum(self):
+        # Edge: two pending cancels at the same price (e.g., two ticks of
+        # cancel-replace where both are still echoing). They sum, just like
+        # active executors at the same price do.
+        controller, _ = _make_controller_for_walker(executors=[])
+        controller.market_data_provider.time.return_value = 1000.0
+        controller._pending_cancels["p1"] = (
+            Decimal("0.4414"), Decimal("45"), 1002.0,
+        )
+        controller._pending_cancels["p2"] = (
+            Decimal("0.4414"), Decimal("46"), 1002.0,
+        )
+        result = controller._compute_own_volume_by_price()
+        self.assertEqual(result, {Decimal("0.4414"): Decimal("91")})
+
+
+class TestBBOPegBuyRecordPendingCancels(unittest.TestCase):
+    """Direct unit tests for _record_pending_cancels.
+
+    Pins the cancel-debounce recording contract: when the controller emits
+    a Stop, record (price, amount, until=now+cancel_debounce_seconds) keyed
+    by executor_id so _compute_own_volume_by_price can keep subtracting the
+    cancelled volume from the exchange book during the cancel-propagation
+    lag window.
+    """
+
+    def _make_controller(
+        self,
+        *,
+        cancel_debounce_seconds: float = 2.0,
+        now: float = 1000.0,
+    ) -> BBOPegBuyController:
+        """Builds a controller with mocked time. cancel_debounce_seconds
+        defaults to 2.0 (production default); tests can pass 0 to disable
+        recording or other values for boundary checks.
+        """
+        config = BBOPegBuyConfig(
+            id="test",
+            controller_name="bbo_peg_buy",
+            connector_name="htx",
+            trading_pair="XNO-USDT",
+            total_amount_quote=Decimal("20"),
+            update_interval=0.5,
+            cancel_debounce_seconds=cancel_debounce_seconds,
+        )
+        market_data_provider = MagicMock(spec=MarketDataProvider)
+        market_data_provider.time.return_value = now
+        return BBOPegBuyController(
+            config=config,
+            market_data_provider=market_data_provider,
+            actions_queue=AsyncMock(spec=asyncio.Queue),
+        )
+
+    # --- Basic recording ---
+
+    def test_records_single_executor_with_correct_fields(self):
+        # The fundamental contract: each stopped executor becomes an entry
+        # keyed by id with value (price, amount, now + debounce_seconds).
+        controller = self._make_controller(cancel_debounce_seconds=2.0, now=1000.0)
+        executor = _fake_executor(price=Decimal("0.4414"), amount=Decimal("45.31"))
+        executor.id = "exec-1"
+        controller._record_pending_cancels([executor])
+        self.assertEqual(len(controller._pending_cancels), 1)
+        self.assertIn("exec-1", controller._pending_cancels)
+        price, amount, until = controller._pending_cancels["exec-1"]
+        self.assertEqual(price, Decimal("0.4414"))
+        self.assertEqual(amount, Decimal("45.31"))
+        self.assertEqual(until, 1002.0)
+
+    def test_records_multiple_executors_separately(self):
+        # Two executors with distinct ids → two separate entries.
+        controller = self._make_controller()
+        e1 = _fake_executor(price=Decimal("0.4414"), amount=Decimal("45"))
+        e1.id = "exec-1"
+        e2 = _fake_executor(price=Decimal("0.4415"), amount=Decimal("46"))
+        e2.id = "exec-2"
+        controller._record_pending_cancels([e1, e2])
+        self.assertEqual(len(controller._pending_cancels), 2)
+        self.assertIn("exec-1", controller._pending_cancels)
+        self.assertIn("exec-2", controller._pending_cancels)
+
+    def test_empty_list_does_not_add_entries(self):
+        # Edge: empty input → no recording → dict unchanged.
+        controller = self._make_controller()
+        controller._record_pending_cancels([])
+        self.assertEqual(controller._pending_cancels, {})
+
+    # --- Until timestamp math ---
+
+    def test_until_uses_market_data_provider_time(self):
+        # The mock time source must be used, not wall-clock. Pin via a
+        # specific value so a refactor to time.time() would be caught.
+        controller = self._make_controller(now=5555.0, cancel_debounce_seconds=3.0)
+        executor = _fake_executor(price=Decimal("0.44"), amount=Decimal("10"))
+        executor.id = "e"
+        controller._record_pending_cancels([executor])
+        _, _, until = controller._pending_cancels["e"]
+        self.assertEqual(until, 5558.0)
+
+    def test_until_reflects_config_debounce_seconds(self):
+        # If config changes the debounce window, until math updates with it.
+        # Use a distinctive value (7.5s) so the assertion is unambiguous.
+        controller = self._make_controller(now=100.0, cancel_debounce_seconds=7.5)
+        executor = _fake_executor(price=Decimal("0.44"), amount=Decimal("10"))
+        executor.id = "e"
+        controller._record_pending_cancels([executor])
+        _, _, until = controller._pending_cancels["e"]
+        self.assertEqual(until, 107.5)
+
+    # --- Filter rules (mirror _compute_own_volume_by_price filters) ---
+
+    def test_skips_executors_with_non_order_executor_config(self):
+        # A non-OrderExecutorConfig executor shouldn't be recorded at all.
+        # Otherwise the dict would hold an entry with no usable (price,
+        # amount), polluting downstream consumers.
+        controller = self._make_controller()
+        wrong_cfg = _fake_executor(
+            price=Decimal("0.44"),
+            amount=Decimal("10"),
+            use_order_executor_config=False,
+        )
+        wrong_cfg.id = "wrong"
+        controller._record_pending_cancels([wrong_cfg])
+        self.assertEqual(controller._pending_cancels, {})
+
+    def test_skips_executors_with_none_price(self):
+        # OrderExecutorConfig but price=None → skip. We can't add to
+        # my_volume_by_price keyed by a None price, so don't record it.
+        controller = self._make_controller()
+        none_price = _fake_executor(price=None, amount=Decimal("10"))
+        none_price.id = "noprice"
+        controller._record_pending_cancels([none_price])
+        self.assertEqual(controller._pending_cancels, {})
+
+    # --- Eviction and dedupe behavior ---
+
+    def test_evicts_expired_entries_on_record(self):
+        # Opportunistic GC: when we record new pending cancels, expired
+        # entries (until <= now) are dropped from the dict. Keeps memory
+        # bounded over long sessions without needing a separate sweep.
+        controller = self._make_controller(now=1000.0)
+        controller._pending_cancels["old"] = (
+            Decimal("0.40"), Decimal("10"), 999.0,  # expired
+        )
+        controller._pending_cancels["future"] = (
+            Decimal("0.41"), Decimal("10"), 1001.0,  # still valid
+        )
+        e = _fake_executor(price=Decimal("0.42"), amount=Decimal("10"))
+        e.id = "new"
+        controller._record_pending_cancels([e])
+        self.assertNotIn("old", controller._pending_cancels)
+        self.assertIn("future", controller._pending_cancels)
+        self.assertIn("new", controller._pending_cancels)
+
+    def test_re_recording_same_executor_id_refreshes_until(self):
+        # If the framework keeps an executor in is_active=True across ticks
+        # (cancel in flight), _record_pending_cancels gets called multiple
+        # times for the same id. The re-record refreshes until, keeping the
+        # debounce alive as long as the controller keeps stopping it.
+        controller = self._make_controller(cancel_debounce_seconds=2.0, now=1000.0)
+        e = _fake_executor(price=Decimal("0.44"), amount=Decimal("10"))
+        e.id = "exec-1"
+        controller._record_pending_cancels([e])
+        self.assertEqual(controller._pending_cancels["exec-1"][2], 1002.0)
+        # Now advance time and re-record.
+        controller.market_data_provider.time.return_value = 1001.5
+        controller._record_pending_cancels([e])
+        self.assertEqual(controller._pending_cancels["exec-1"][2], 1003.5)
+
+    def test_zero_debounce_seconds_records_already_expired_entry(self):
+        # Setting cancel_debounce_seconds=0 effectively disables the feature:
+        # records an entry with until=now, which is immediately filtered out
+        # by _compute_own_volume_by_price's strict-greater-than check.
+        # Useful as an escape hatch and pinning the disable semantics.
+        controller = self._make_controller(cancel_debounce_seconds=0.0, now=1000.0)
+        e = _fake_executor(price=Decimal("0.44"), amount=Decimal("10"))
+        e.id = "exec-1"
+        controller._record_pending_cancels([e])
+        # Entry was recorded, but with until == now → filtered downstream.
+        self.assertEqual(controller._pending_cancels["exec-1"][2], 1000.0)
+
 
 class TestBBOPegBuyLogExternalBidChange(unittest.TestCase):
     """Direct unit tests for _log_external_bid_change in isolation.
@@ -2675,6 +2920,112 @@ class TestBBOPegBuyDowngradeTrapScenario(IsolatedAsyncioWrapperTestCase):
             return_value=Decimal("0.4295")  # current_best_bid at exchange
         )
         self.assertEqual(no_clamp_executor.get_order_price(), Decimal("0.4296"))
+
+
+class TestBBOPegBuyCancelLagScenario(IsolatedAsyncioWrapperTestCase):
+    """End-to-end test replicating the self-chase loop observed in production
+    at 0.5s tick interval.
+
+    The bug: when the controller emits Stop+Create, the executor disappears
+    from executors_info instantly but the exchange book WebSocket lags by
+    1-2s. During the lag, the walker sees the just-cancelled order in the
+    book + no matching active executor → treats it as an external bid →
+    targets one tick above → emits Stop+Create at the higher price → loop.
+
+    Production log evidence (13:07:29 to 13:07:32):
+        Tick 1: external=0.4364, my=0.4414 → emit create 0.4365
+        Tick 2: external=0.4414, my=0.4365 → emit create 0.4415   ← ghost!
+        Tick 3: external=0.4364, my=0.4415 → emit create 0.4365
+        Tick 4: external=0.4415, my=0.4365 → emit create 0.4416   ← ghost!
+
+    This test pins the FIX: with the just-cancelled order recorded in
+    _pending_cancels, the walker subtracts it from the book and finds the
+    real external bid below, avoiding the chase.
+
+    Fails if cancel-debounce is reverted (e.g., _pending_cancels is empty
+    or _compute_own_volume_by_price stops including it).
+    """
+
+    async def test_walker_does_not_chase_just_cancelled_ghost_order(self):
+        # Simulate the state right AFTER a Stop+Create has been issued on
+        # the previous tick but BEFORE the exchange book WebSocket has
+        # reflected the cancel:
+        #   - Our new executor is at 0.4365 (the create from previous tick)
+        #   - Book still shows our just-cancelled 0.4414 at top (cancel-lag)
+        #   - _pending_cancels has the 0.4414 order recorded, still within
+        #     the debounce window
+        new_executor = _fake_executor(price=Decimal("0.4365"), amount=Decimal("45.8"))
+        new_executor.id = "new-after-create"
+
+        # Book mirrors production log 13:07:30.235: ghost 0.4414 still on top.
+        lagged_bids = [
+            (Decimal("0.4414"), Decimal("45.3103")),  # OUR ghost (just-cancelled)
+            (Decimal("0.4364"), Decimal("71.9366")),  # real top of book
+            (Decimal("0.4182"), Decimal("110.4634")),
+        ]
+
+        config = BBOPegBuyConfig(
+            id="test",
+            controller_name="bbo_peg_buy",
+            connector_name="htx",
+            trading_pair="XNO-USDT",
+            total_amount_quote=Decimal("20"),
+            update_interval=2.0,
+            min_spread_pct=Decimal("0.02"),
+            cancel_debounce_seconds=2.0,
+        )
+        market_data_provider = MagicMock(spec=MarketDataProvider)
+        rules = MagicMock()
+        rules.min_price_increment = Decimal("0.0001")
+        market_data_provider.get_trading_rules.return_value = rules
+        market_data_provider.get_price_by_type.return_value = Decimal("0.4541")
+        market_data_provider.get_order_book.return_value = _fake_order_book(
+            lagged_bids
+        )
+        market_data_provider.quantize_order_price.side_effect = (
+            lambda _c, _p, price: price
+        )
+        market_data_provider.quantize_order_amount.side_effect = (
+            lambda _c, _p, amount: amount
+        )
+        market_data_provider.time.return_value = 1000.0
+
+        controller = BBOPegBuyController(
+            config=config,
+            market_data_provider=market_data_provider,
+            actions_queue=AsyncMock(spec=asyncio.Queue),
+        )
+        setattr(controller, "executors_info", [new_executor])
+        setattr(controller, "logger", MagicMock(return_value=MagicMock()))
+        # Seed the pending-cancel state: the 0.4414 order was Stopped on the
+        # previous tick (at t=999), well within the 2s debounce window.
+        controller._pending_cancels["just-cancelled"] = (
+            Decimal("0.4414"),
+            Decimal("45.3103"),
+            1001.0,  # until = previous_now + 2s = 999 + 2 = 1001 > 1000 (now)
+        )
+
+        # Run the tick.
+        await controller.update_processed_data()
+
+        # ASSERTION 1 — walker correctly identifies 0.4414 as ours (pending),
+        # skips it, and picks the real external best bid 0.4364. Without the
+        # fix, external_best_bid would be 0.4414 (the ghost).
+        self.assertEqual(
+            controller.processed_data["external_best_bid"], Decimal("0.4364")
+        )
+
+        # ASSERTION 2 — target stays at 0.4365, not jumping up to 0.4415.
+        # This is the self-chase prevention in action.
+        self.assertEqual(
+            controller.processed_data["target_price"], Decimal("0.4365")
+        )
+
+        # ASSERTION 3 — controller emits NO actions this tick: the active
+        # executor is already at the correct price 0.4365 (in_tolerance).
+        # Without the fix, we'd see Stop(0.4365) + Create(0.4415) here.
+        actions = controller.determine_executor_actions()
+        self.assertEqual(actions, [])
 
 
 if __name__ == "__main__":

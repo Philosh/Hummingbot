@@ -20,6 +20,7 @@ from hummingbot.strategy_v2.controllers.controller_base import (
     ControllerBase,
     ControllerConfigBase,
 )
+from hummingbot.strategy_v2.executors.executor_orchestrator import ExecutorOrchestrator
 from hummingbot.strategy_v2.executors.order_executor.data_types import (
     ExecutionStrategy,
     OrderExecutorConfig,
@@ -30,6 +31,20 @@ from hummingbot.strategy_v2.models.executor_actions import (
     StopExecutorAction,
 )
 from hummingbot.strategy_v2.models.executors_info import ExecutorInfo
+
+from controllers.market_making.no_clamp_order_executor import NoClampOrderExecutor
+
+# Process-wide wire-up: route every "order_executor" CreateExecutorAction
+# through NoClampOrderExecutor so this controller can actually peg one tick
+# above current_best_bid (stock OrderExecutor silently clamps it down).
+# See no_clamp_order_executor.py for the rationale. Side-effect: if any other
+# controller runs in the same process and relies on the upstream clamp, it
+# will get the no-clamp variant too — currently a single-controller setup so
+# not a concern.
+# Upstream types _executor_mapping's values as a Literal union of the originally-
+# registered executor classes, so any subclass assignment is rejected even though
+# it's semantically valid (NoClampOrderExecutor IS an OrderExecutor).
+ExecutorOrchestrator._executor_mapping["order_executor"] = NoClampOrderExecutor  # type: ignore[assignment]  # ty: ignore[invalid-assignment]
 
 
 class BBOPegBuyConfig(ControllerConfigBase):

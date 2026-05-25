@@ -3,10 +3,13 @@ import unittest
 from decimal import Decimal
 from test.isolated_asyncio_wrapper_test_case import IsolatedAsyncioWrapperTestCase
 from typing import List, Optional, Tuple, cast
-from unittest.mock import AsyncMock, MagicMock
+from unittest.mock import AsyncMock, MagicMock, PropertyMock
 
+from hummingbot.connector.exchange_py_base import ExchangePyBase
+from hummingbot.connector.trading_rule import TradingRule  # type: ignore[import-not-found]  # ty: ignore[unresolved-import]
 from hummingbot.core.data_type.common import TradeType
 from hummingbot.data_feed.market_data_provider import MarketDataProvider
+from hummingbot.strategy.strategy_v2_base import StrategyV2Base
 from hummingbot.strategy_v2.executors.order_executor.data_types import (
     ExecutionStrategy,
     OrderExecutorConfig,
@@ -18,6 +21,7 @@ from hummingbot.strategy_v2.models.executor_actions import (
 from hummingbot.strategy_v2.models.executors_info import ExecutorInfo
 
 from controllers.market_making.bbo_peg_buy import BBOPegBuyConfig, BBOPegBuyController
+from controllers.market_making.no_clamp_order_executor import NoClampOrderExecutor
 
 
 def _fake_bid_row(price: Decimal, amount: Decimal) -> MagicMock:
@@ -2330,6 +2334,149 @@ class TestBBOPegBuyDetermineExecutorActions(unittest.TestCase):
         )
         actions = controller.determine_executor_actions()
         self.assertEqual(actions, [])
+
+
+class TestBBOPegBuyDowngradeTrapScenario(IsolatedAsyncioWrapperTestCase):
+    """End-to-end integration test for the 'stuck at 0.4295' downgrade trap.
+
+    Dual of TestBBOPegBuyAntiSpoofScenario:
+      - Anti-spoof  = gate + cancel-on-None composition (compressed-spread case)
+      - Downgrade   = controller stale-detection + NoClamp pass-through
+                      (healthy spread, BUY LIMIT_MAKER intent ABOVE current_best_bid)
+
+    Reproduces production log 21:47:55 exactly:
+      - 92 XNO of external bids at 0.4295 + our 46 XNO at the same level
+      - Healthy 5.7% spread, so the anti-spoof gate stays clear
+      - Walker: external_best_bid = 0.4295 (excludes our own volume)
+      - Controller target = 0.4296 (1 tick above external)
+      - Controller emits Stop(our 0.4295 order) + Create(price=0.4296)
+      - NoClampOrderExecutor.get_order_price() returns 0.4296 — the
+        stock OrderExecutor would silently downgrade it to 0.4295 here.
+
+    Test fails if EITHER half is reverted:
+      - Controller's stale detection breaks: assertions 1-3 fail.
+      - NoClamp's BUY LIMIT_MAKER override is reverted: assertion 4 fails
+        (final exchange price drops back to the trap value 0.4295).
+    """
+
+    @staticmethod
+    def _make_strategy_for_executor() -> MagicMock:
+        """Minimal mocked StrategyV2Base sufficient to instantiate an
+        OrderExecutor subclass. Mirrors the helper in
+        test_no_clamp_order_executor.py — duplicated so this test file
+        stays self-contained.
+        """
+        strategy = MagicMock(spec=StrategyV2Base)
+        type(strategy).trading_pair = PropertyMock(return_value="XNO-USDT")
+        connector = MagicMock(spec=ExchangePyBase)
+        type(connector).trading_rules = PropertyMock(
+            return_value={"XNO-USDT": TradingRule(trading_pair="XNO-USDT")}
+        )
+        strategy.connectors = {"htx": connector}
+        return strategy
+
+    async def test_stuck_state_controller_emits_create_no_clamp_preserves_intent(self):
+        # Our 46 XNO is already at 0.4295 (placed in some prior tick that
+        # the stock-OrderExecutor downgrade trap forced down to this level).
+        active_executor = _fake_executor(
+            price=Decimal("0.4295"), amount=Decimal("46")
+        )
+        active_executor.id = "downgraded-order"
+
+        # Book exactly as in production log 21:47:55:
+        #   0.4295   138 XNO  (92 external + 46 ours)
+        #   0.4294    46 XNO  (someone copying our size)
+        #   0.4266   335 XNO  (deep real bids)
+        # Deep ask at 0.4541 → spread 5.7% → gate stays clear.
+        stuck_bids = [
+            (Decimal("0.4295"), Decimal("138")),
+            (Decimal("0.4294"), Decimal("46")),
+            (Decimal("0.4266"), Decimal("335")),
+        ]
+
+        config = BBOPegBuyConfig(
+            id="test",
+            controller_name="bbo_peg_buy",
+            connector_name="htx",
+            trading_pair="XNO-USDT",
+            total_amount_quote=Decimal("20"),
+            update_interval=0.5,
+            # Gate enabled at production threshold (2%), but spread is 5.7%
+            # so it stays clear. Isolates this test from anti-spoof behavior
+            # — the trap lives entirely in the normal "post a quote" path.
+            min_spread_pct=Decimal("0.02"),
+        )
+        market_data_provider = MagicMock(spec=MarketDataProvider)
+        rules = MagicMock()
+        rules.min_price_increment = Decimal("0.0001")
+        market_data_provider.get_trading_rules.return_value = rules
+        market_data_provider.get_price_by_type.return_value = Decimal("0.4541")
+        market_data_provider.get_order_book.return_value = _fake_order_book(stuck_bids)
+        market_data_provider.quantize_order_price.side_effect = (
+            lambda _c, _p, price: price
+        )
+        market_data_provider.quantize_order_amount.side_effect = (
+            lambda _c, _p, amount: amount
+        )
+        market_data_provider.time.return_value = 1700000000.0
+
+        controller = BBOPegBuyController(
+            config=config,
+            market_data_provider=market_data_provider,
+            actions_queue=AsyncMock(spec=asyncio.Queue),
+        )
+        setattr(controller, "executors_info", [active_executor])
+        setattr(controller, "logger", MagicMock(return_value=MagicMock()))
+
+        # Run a single controller tick.
+        await controller.update_processed_data()
+        actions = controller.determine_executor_actions()
+
+        # ASSERTION 1 — controller computed the right target.
+        # External best is 0.4295 (the 92-XNO non-ours), so target = 0.4296.
+        # Fails if walker logic regresses (e.g., stops excluding own volume).
+        self.assertEqual(
+            controller.processed_data["target_price"], Decimal("0.4296")
+        )
+
+        # ASSERTION 2 — controller flagged our 0.4295 order as stale and
+        # emitted a Stop for it. Fails if categorize logic regresses
+        # (e.g., starts using tolerance comparison instead of strict equality).
+        stops = [a for a in actions if isinstance(a, StopExecutorAction)]
+        self.assertEqual(len(stops), 1)
+        stop = stops[0]
+        assert isinstance(stop, StopExecutorAction)
+        self.assertEqual(stop.executor_id, "downgraded-order")
+
+        # ASSERTION 3 — controller emitted a Create at the INTENDED price
+        # (0.4296), proving it isn't internally pre-clamping or doing
+        # anything weird. The controller's job ends here; the price 0.4296
+        # is handed off to the framework.
+        creates = [a for a in actions if isinstance(a, CreateExecutorAction)]
+        self.assertEqual(len(creates), 1)
+        create = creates[0]
+        assert isinstance(create, CreateExecutorAction)
+        executor_config = create.executor_config
+        assert isinstance(executor_config, OrderExecutorConfig)
+        self.assertEqual(executor_config.price, Decimal("0.4296"))
+
+        # ASSERTION 4 — NoClampOrderExecutor preserves the controller's intent.
+        # This is the second half of the fix: wire the Create's config through
+        # NoClamp.get_order_price() — the actual code path production runs.
+        # Final exchange price MUST equal 0.4296 (intent), NOT 0.4295
+        # (stock-OrderExecutor clamp = the trap). Fails if NoClamp's override
+        # is reverted to delegate to super().
+        no_clamp_executor = NoClampOrderExecutor(
+            strategy=self._make_strategy_for_executor(),
+            config=executor_config,
+        )
+        # Standard test idiom for mocking a @property: type checkers don't
+        # recognize this as a valid setter because current_market_price is
+        # read-only in the parent class, but the runtime assignment works.
+        type(no_clamp_executor).current_market_price = PropertyMock(  # type: ignore[method-assign]  # pyright: ignore[reportAttributeAccessIssue]
+            return_value=Decimal("0.4295")  # current_best_bid at exchange
+        )
+        self.assertEqual(no_clamp_executor.get_order_price(), Decimal("0.4296"))
 
 
 if __name__ == "__main__":

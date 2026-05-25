@@ -20,6 +20,7 @@ from hummingbot.strategy_v2.models.executor_actions import (
 )
 from hummingbot.strategy_v2.models.executors_info import ExecutorInfo
 
+from controllers.market_making import fill_tracker
 from controllers.market_making.bbo_peg_sell import (
     BBOPegSellConfig,
     BBOPegSellController,
@@ -3095,6 +3096,77 @@ class TestBBOPegSellDetermineExecutorActions(unittest.TestCase):
         self.assertFalse(controller._has_filled)
         creates = [a for a in actions if isinstance(a, CreateExecutorAction)]
         self.assertEqual(len(creates), 1)
+
+
+class TestBBOPegSellFillTrackerIntegration(unittest.TestCase):
+    """Pins the sell controller's contribution to the cross-controller
+    fill_tracker. The buy controller's inventory cap relies on each
+    sell fill being recorded exactly once via record_sell_fill.
+    """
+
+    def setUp(self):
+        fill_tracker.reset_all()
+
+    def _make_controller(self, trading_pair: str = "ERA-USDT") -> BBOPegSellController:
+        config = BBOPegSellConfig(
+            id="test",
+            controller_name="bbo_peg_sell",
+            connector_name="htx",
+            trading_pair=trading_pair,
+            total_amount_quote=Decimal("20"),
+            update_interval=0.5,
+        )
+        return BBOPegSellController(
+            config=config,
+            market_data_provider=MagicMock(spec=MarketDataProvider),
+            actions_queue=AsyncMock(spec=asyncio.Queue),
+        )
+
+    def _fake_executor_with_fill(
+        self, *, eid: str, executed_amount_base, is_active: bool = True
+    ) -> ExecutorInfo:
+        e = MagicMock()
+        e.is_active = is_active
+        e.custom_info = {"executed_amount_base": executed_amount_base}
+        e.config = MagicMock(spec=OrderExecutorConfig)
+        e.config.price = Decimal("0.1446")
+        e.id = eid
+        return cast(ExecutorInfo, e)
+
+    def test_sell_controller_records_each_new_fill_into_tracker(self):
+        controller = self._make_controller()
+        setattr(controller, "executors_info", [
+            self._fake_executor_with_fill(eid="s1", executed_amount_base="5"),
+        ])
+        self.assertEqual(fill_tracker.sells_filled("ERA-USDT"), 0)
+        controller._update_fill_latch()
+        self.assertEqual(fill_tracker.sells_filled("ERA-USDT"), 1)
+
+    def test_partial_fill_dedup_does_not_inflate_tracker(self):
+        # Mirror of the buy-side dedup test: partial fills growing across
+        # ticks must be counted exactly once in the shared tracker.
+        controller = self._make_controller()
+        e = self._fake_executor_with_fill(eid="s1", executed_amount_base="1")
+        setattr(controller, "executors_info", [e])
+        controller._update_fill_latch()
+        e.custom_info = {"executed_amount_base": "3"}
+        controller._update_fill_latch()
+        e.custom_info = {"executed_amount_base": "5"}
+        controller._update_fill_latch()
+        self.assertEqual(fill_tracker.sells_filled("ERA-USDT"), 1)
+
+    def test_buy_and_sell_track_independently_per_pair(self):
+        # End-to-end check that buy_lead reflects both sides: 2 buys
+        # recorded via the buy-side tracker hook, 1 sell via the sell
+        # controller → lead = 1.
+        fill_tracker.record_buy_fill("ERA-USDT")
+        fill_tracker.record_buy_fill("ERA-USDT")
+        controller = self._make_controller()
+        setattr(controller, "executors_info", [
+            self._fake_executor_with_fill(eid="s1", executed_amount_base="5"),
+        ])
+        controller._update_fill_latch()
+        self.assertEqual(fill_tracker.buy_lead("ERA-USDT"), 1)
 
 
 class TestBBOPegSellDowngradeTrapScenario(IsolatedAsyncioWrapperTestCase):

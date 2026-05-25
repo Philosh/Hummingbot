@@ -29,11 +29,17 @@ cancel_debounce_seconds: 2.0
 # higher volume support sustained round-tripping. Each distinct executor
 # counts once (partial fills don't inflate the count). After 10 fills, the
 # controller stops creating new orders for the process lifetime.
-#
-# Capital sizing reminder: this is the BUY side. Up to 10 buys × $20 each
-# = $200 USDT worth of ERA can accumulate if the sell side doesn't keep
-# pace. Make sure you have headroom for inventory growth.
 max_fills: 10
+
+# Cross-controller inventory cap. Buy is paused when (buys - sells) >= 5
+# on this trading pair (counts tracked across both bbo_peg buy and sell
+# controllers via the shared fill_tracker module). Effective behavior:
+# - First 5 buys can fire back-to-back even with no sells (lead=0..5).
+# - 6th buy waits for the 1st sell fill.
+# - In general: buy N is allowed only when (filled buys - filled sells) < 5.
+# Prevents the buy side from accumulating more than ~$100 of ERA inventory
+# (5 × $20 quote) regardless of how slowly sells clear.
+max_buy_lead: 5
 
 manual_kill_switch: false
 initial_positions: []

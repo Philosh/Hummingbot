@@ -33,6 +33,7 @@ from hummingbot.strategy_v2.models.executor_actions import (
 )
 from hummingbot.strategy_v2.models.executors_info import ExecutorInfo
 
+from controllers.market_making import fill_tracker
 from controllers.market_making.no_clamp_order_executor import NoClampOrderExecutor
 
 # Process-wide wire-up: route every "order_executor" CreateExecutorAction
@@ -71,6 +72,11 @@ class BBOPegBuyConfig(ControllerConfigBase):
         ge=1,
         description="Number of distinct fills allowed before the controller stops creating new orders for the process lifetime. Default 1 preserves the original one-shot behavior. Each unique executor is counted at most once (partial fills don't inflate the count). Raise to allow the controller to re-quote and capture more spread per process; lower not allowed (use a separate stop signal).",
     )
+    max_buy_lead: Optional[int] = Field(
+        default=None,
+        ge=1,
+        description="Cross-controller inventory cap. When set, the buy controller refuses to emit a Create if (buys_filled - sells_filled) >= this value, where both counts are tracked across the buy and sell controllers for the same trading pair via the shared fill_tracker module. Prevents the buy side from accumulating inventory faster than the sell side can clear it when running max_fills > 1. None (default) disables the cap — buys fire freely up to max_fills regardless of sell state.",
+    )
 
     def update_markets(self, markets: MarketDict) -> MarketDict:
         # Upstream's add_or_update signature mistypes *args as the set type
@@ -101,6 +107,10 @@ class BBOPegBuyController(ControllerBase):
         # IDs of executors already counted toward _fill_count, so partial
         # fills on the same executor don't inflate the count across ticks.
         self._counted_fill_executor_ids: Set[str] = set()
+        # Cache of the inventory-cap gate's last state, so we only log on
+        # capped <-> cleared transitions (matches the anti-spoof and balance
+        # log patterns). False = not currently capped.
+        self._buy_lead_capped_logged: bool = False
         # Cache of the last logged external_best_bid value, so we only emit
         # a diagnostic line when the chosen price actually changes.
         self._last_logged_external_best_bid: Optional[Decimal] = None
@@ -408,6 +418,10 @@ class BBOPegBuyController(ControllerBase):
         ticks don't inflate the count. Once _fill_count reaches
         config.max_fills, _has_filled becomes True and the controller stops
         emitting new Creates.
+
+        Each newly-counted fill also records into the cross-controller
+        fill_tracker so the sell side (and the max_buy_lead inventory cap)
+        can see this buy's count.
         """
         for e in self.executors_info:
             eid = str(e.id)
@@ -419,6 +433,7 @@ class BBOPegBuyController(ControllerBase):
             if executed is not None and Decimal(str(executed)) > 0:
                 self._fill_count += 1
                 self._counted_fill_executor_ids.add(eid)
+                fill_tracker.record_buy_fill(self.config.trading_pair)
 
     @property
     def _has_filled(self) -> bool:
@@ -473,8 +488,12 @@ class BBOPegBuyController(ControllerBase):
         self, target_price: Decimal
     ) -> Optional[CreateExecutorAction]:
         """Build a LIMIT_MAKER buy at target_price.
-        Returns None if quantized amount is zero (book/balance can't support an order).
+        Returns None if quantized amount is zero (book can't support an
+        order) or if the cross-controller inventory cap (max_buy_lead) has
+        been reached.
         """
+        if not self._is_within_inventory_cap():
+            return None
         amount = self.market_data_provider.quantize_order_amount(
             self.config.connector_name,
             self.config.trading_pair,
@@ -494,3 +513,36 @@ class BBOPegBuyController(ControllerBase):
                 execution_strategy=ExecutionStrategy.LIMIT_MAKER,
             ),
         )
+
+    def _is_within_inventory_cap(self) -> bool:
+        """Return False (and log on state transition) when the buy side has
+        accumulated max_buy_lead unmatched fills ahead of sells. Returns
+        True if the cap is disabled (max_buy_lead is None) or lead is still
+        below the cap.
+
+        Lead is computed across processes-wide fill_tracker, so a sell-side
+        fill on the same trading_pair immediately lowers the lead and can
+        re-enable buy Creates within the same tick.
+        """
+        cap = self.config.max_buy_lead
+        if cap is None:
+            return True
+        lead = fill_tracker.buy_lead(self.config.trading_pair)
+        if lead >= cap:
+            if not self._buy_lead_capped_logged:
+                self.logger().warning(
+                    f"{self.config.log_prefix} buy paused: lead={lead} "
+                    f">= max_buy_lead={cap} "
+                    f"(buys={fill_tracker.buys_filled(self.config.trading_pair)}, "
+                    f"sells={fill_tracker.sells_filled(self.config.trading_pair)}). "
+                    f"Waiting for a sell fill before quoting again."
+                )
+                self._buy_lead_capped_logged = True
+            return False
+        if self._buy_lead_capped_logged:
+            self.logger().info(
+                f"{self.config.log_prefix} buy resumed: lead={lead} "
+                f"< max_buy_lead={cap}."
+            )
+            self._buy_lead_capped_logged = False
+        return True

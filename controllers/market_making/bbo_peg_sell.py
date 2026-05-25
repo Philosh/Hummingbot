@@ -50,6 +50,7 @@ from hummingbot.strategy_v2.models.executor_actions import (
 )
 from hummingbot.strategy_v2.models.executors_info import ExecutorInfo
 
+from controllers.market_making import fill_tracker
 from controllers.market_making.no_clamp_order_executor import NoClampOrderExecutor
 
 # Process-wide wire-up: route every "order_executor" CreateExecutorAction
@@ -428,6 +429,10 @@ class BBOPegSellController(ControllerBase):
         ticks don't inflate the count. Once _fill_count reaches
         config.max_fills, _has_filled becomes True and the controller stops
         emitting new Creates.
+
+        Each newly-counted fill also records into the cross-controller
+        fill_tracker so the buy side (and its max_buy_lead inventory cap)
+        can see this sell's count.
         """
         for e in self.executors_info:
             eid = str(e.id)
@@ -439,6 +444,7 @@ class BBOPegSellController(ControllerBase):
             if executed is not None and Decimal(str(executed)) > 0:
                 self._fill_count += 1
                 self._counted_fill_executor_ids.add(eid)
+                fill_tracker.record_sell_fill(self.config.trading_pair)
 
     @property
     def _has_filled(self) -> bool:

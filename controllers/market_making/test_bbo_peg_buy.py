@@ -20,6 +20,7 @@ from hummingbot.strategy_v2.models.executor_actions import (
 )
 from hummingbot.strategy_v2.models.executors_info import ExecutorInfo
 
+from controllers.market_making import fill_tracker
 from controllers.market_making.bbo_peg_buy import BBOPegBuyConfig, BBOPegBuyController
 from controllers.market_making.no_clamp_order_executor import NoClampOrderExecutor
 
@@ -2974,6 +2975,264 @@ class TestBBOPegBuyDetermineExecutorActions(unittest.TestCase):
         self.assertFalse(controller._has_filled)
         creates = [a for a in actions if isinstance(a, CreateExecutorAction)]
         self.assertEqual(len(creates), 1)
+
+
+class TestFillTracker(unittest.TestCase):
+    """Direct unit tests for the cross-controller fill_tracker module.
+
+    Pins per-pair isolation, lead computation, and the reset semantics.
+    Counters are module-level globals, so every test resets state first.
+    """
+
+    def setUp(self):
+        fill_tracker.reset_all()
+
+    def test_initial_state_lead_is_zero(self):
+        self.assertEqual(fill_tracker.buy_lead("ERA-USDT"), 0)
+        self.assertEqual(fill_tracker.buys_filled("ERA-USDT"), 0)
+        self.assertEqual(fill_tracker.sells_filled("ERA-USDT"), 0)
+
+    def test_record_buy_fill_increments_buys_and_lead(self):
+        fill_tracker.record_buy_fill("ERA-USDT")
+        fill_tracker.record_buy_fill("ERA-USDT")
+        self.assertEqual(fill_tracker.buys_filled("ERA-USDT"), 2)
+        self.assertEqual(fill_tracker.buy_lead("ERA-USDT"), 2)
+
+    def test_record_sell_fill_increments_sells_and_lowers_lead(self):
+        fill_tracker.record_buy_fill("ERA-USDT")
+        fill_tracker.record_buy_fill("ERA-USDT")
+        fill_tracker.record_sell_fill("ERA-USDT")
+        self.assertEqual(fill_tracker.sells_filled("ERA-USDT"), 1)
+        self.assertEqual(fill_tracker.buy_lead("ERA-USDT"), 1)
+
+    def test_lead_can_be_negative(self):
+        # Pre-existing inventory sold off before any buys happen → negative
+        # lead. The tracker must NOT clamp to zero; the buy controller's
+        # cap check uses ">= cap" which already handles negatives correctly.
+        fill_tracker.record_sell_fill("ERA-USDT")
+        fill_tracker.record_sell_fill("ERA-USDT")
+        self.assertEqual(fill_tracker.buy_lead("ERA-USDT"), -2)
+
+    def test_pairs_are_isolated(self):
+        # CRITICAL: a buy on XNO must not affect ERA's lead. If a refactor
+        # accidentally drops the trading_pair key from the dict, this test
+        # catches it.
+        fill_tracker.record_buy_fill("ERA-USDT")
+        fill_tracker.record_buy_fill("ERA-USDT")
+        fill_tracker.record_buy_fill("XNO-USDT")
+        self.assertEqual(fill_tracker.buy_lead("ERA-USDT"), 2)
+        self.assertEqual(fill_tracker.buy_lead("XNO-USDT"), 1)
+
+    def test_reset_clears_one_pair(self):
+        fill_tracker.record_buy_fill("ERA-USDT")
+        fill_tracker.record_buy_fill("XNO-USDT")
+        fill_tracker.reset("ERA-USDT")
+        self.assertEqual(fill_tracker.buy_lead("ERA-USDT"), 0)
+        self.assertEqual(fill_tracker.buy_lead("XNO-USDT"), 1)
+
+    def test_reset_all_clears_everything(self):
+        fill_tracker.record_buy_fill("ERA-USDT")
+        fill_tracker.record_buy_fill("XNO-USDT")
+        fill_tracker.reset_all()
+        self.assertEqual(fill_tracker.buy_lead("ERA-USDT"), 0)
+        self.assertEqual(fill_tracker.buy_lead("XNO-USDT"), 0)
+
+
+class TestBBOPegBuyInventoryCap(unittest.TestCase):
+    """Tests for the max_buy_lead cross-controller inventory cap.
+
+    Pins:
+      - cap disabled (max_buy_lead=None) → buys fire freely
+      - cap engaged (lead >= cap) → _build_create_action returns None
+      - cap clears after a sell fill on the same pair → buys resume
+      - state-transition log fires once on engage, once on clear
+      - buy fills are recorded into fill_tracker
+    """
+
+    def setUp(self):
+        fill_tracker.reset_all()
+
+    def _make_controller(
+        self,
+        *,
+        max_buy_lead: Optional[int] = None,
+        trading_pair: str = "ERA-USDT",
+    ) -> BBOPegBuyController:
+        config = BBOPegBuyConfig(
+            id="test",
+            controller_name="bbo_peg_buy",
+            connector_name="htx",
+            trading_pair=trading_pair,
+            total_amount_quote=Decimal("20"),
+            update_interval=0.5,
+            max_buy_lead=max_buy_lead,
+        )
+        market_data_provider = MagicMock(spec=MarketDataProvider)
+        market_data_provider.quantize_order_amount.side_effect = (
+            lambda _c, _p, amount: amount
+        )
+        market_data_provider.time.return_value = 1700000000.0  # type: ignore[attr-defined]  # ty: ignore[unresolved-attribute]  # pyright: ignore[reportAttributeAccessIssue]
+        controller = BBOPegBuyController(
+            config=config,
+            market_data_provider=market_data_provider,
+            actions_queue=AsyncMock(spec=asyncio.Queue),
+        )
+        return controller
+
+    # --- Cap disabled ---
+
+    def test_cap_disabled_default_emits_create_regardless_of_lead(self):
+        # max_buy_lead=None (default) → no cap. Even with a huge prior lead
+        # on the tracker, the buy controller emits a Create.
+        controller = self._make_controller(max_buy_lead=None)
+        for _ in range(100):
+            fill_tracker.record_buy_fill("ERA-USDT")
+        result = controller._build_create_action(target_price=Decimal("0.1446"))
+        self.assertIsInstance(result, CreateExecutorAction)
+
+    # --- Cap engaged ---
+
+    def test_cap_engaged_when_lead_reaches_threshold(self):
+        # max_buy_lead=5, lead=5 → no Create.
+        controller = self._make_controller(max_buy_lead=5)
+        for _ in range(5):
+            fill_tracker.record_buy_fill("ERA-USDT")
+        result = controller._build_create_action(target_price=Decimal("0.1446"))
+        self.assertIsNone(result)
+
+    def test_cap_not_yet_engaged_at_lead_below_threshold(self):
+        # CRITICAL boundary: lead == cap - 1 (i.e., 4 with cap=5) MUST still
+        # emit. If someone changes >= to >, this test wouldn't catch it (it'd
+        # pass either way). Instead this pins the inclusive "cap-1 is still
+        # under" semantics by example.
+        controller = self._make_controller(max_buy_lead=5)
+        for _ in range(4):
+            fill_tracker.record_buy_fill("ERA-USDT")
+        result = controller._build_create_action(target_price=Decimal("0.1446"))
+        self.assertIsInstance(result, CreateExecutorAction)
+
+    def test_cap_engages_at_exactly_threshold(self):
+        # Differential vs the above: lead == cap fires the cap. Pins ">="
+        # comparison (strict-greater would let one more buy through).
+        controller = self._make_controller(max_buy_lead=5)
+        for _ in range(5):
+            fill_tracker.record_buy_fill("ERA-USDT")
+        result = controller._build_create_action(target_price=Decimal("0.1446"))
+        self.assertIsNone(result)
+
+    def test_cap_clears_after_sell_fill(self):
+        # The headline behavior: 5 buys, 0 sells → cap engaged. A single
+        # sell fill drops lead to 4, and the very next _build_create_action
+        # call emits a Create.
+        controller = self._make_controller(max_buy_lead=5)
+        for _ in range(5):
+            fill_tracker.record_buy_fill("ERA-USDT")
+        self.assertIsNone(
+            controller._build_create_action(target_price=Decimal("0.1446"))
+        )
+        fill_tracker.record_sell_fill("ERA-USDT")
+        result = controller._build_create_action(target_price=Decimal("0.1446"))
+        self.assertIsInstance(result, CreateExecutorAction)
+
+    def test_user_scenario_seven_buys_two_sells_eighth_blocked(self):
+        # Exactly the scenario from the user's request: 7 buys + 2 sells
+        # (lead=5) → 8th buy blocked. After 3rd sell (lead=4) → 8th allowed.
+        controller = self._make_controller(max_buy_lead=5)
+        for _ in range(7):
+            fill_tracker.record_buy_fill("ERA-USDT")
+        for _ in range(2):
+            fill_tracker.record_sell_fill("ERA-USDT")
+        self.assertEqual(fill_tracker.buy_lead("ERA-USDT"), 5)
+        self.assertIsNone(
+            controller._build_create_action(target_price=Decimal("0.1446"))
+        )
+        fill_tracker.record_sell_fill("ERA-USDT")
+        self.assertEqual(fill_tracker.buy_lead("ERA-USDT"), 4)
+        result = controller._build_create_action(target_price=Decimal("0.1446"))
+        self.assertIsInstance(result, CreateExecutorAction)
+
+    # --- Logging (state-transition rate limit) ---
+
+    def test_cap_engage_log_fires_once_per_episode(self):
+        # Rate-limited like the anti-spoof gate and balance guard. Three
+        # blocked attempts → exactly one warning.
+        controller = self._make_controller(max_buy_lead=5)
+        log_mock = MagicMock()
+        setattr(controller, "logger", MagicMock(return_value=log_mock))
+        for _ in range(5):
+            fill_tracker.record_buy_fill("ERA-USDT")
+        controller._build_create_action(target_price=Decimal("0.1446"))
+        controller._build_create_action(target_price=Decimal("0.1446"))
+        controller._build_create_action(target_price=Decimal("0.1446"))
+        self.assertEqual(log_mock.warning.call_count, 1)
+        warning_msg = log_mock.warning.call_args[0][0]
+        self.assertIn("buy paused", warning_msg)
+        self.assertIn("lead=5", warning_msg)
+
+    def test_cap_clear_emits_info_log_and_rearms_warning(self):
+        # Engage → clear → engage again. Should produce: 1 warning, 1 info,
+        # 1 warning (rearmed because cap cleared in between).
+        controller = self._make_controller(max_buy_lead=5)
+        log_mock = MagicMock()
+        setattr(controller, "logger", MagicMock(return_value=log_mock))
+        for _ in range(5):
+            fill_tracker.record_buy_fill("ERA-USDT")
+        controller._build_create_action(target_price=Decimal("0.1446"))  # warn
+        fill_tracker.record_sell_fill("ERA-USDT")
+        controller._build_create_action(target_price=Decimal("0.1446"))  # info
+        fill_tracker.record_buy_fill("ERA-USDT")
+        controller._build_create_action(target_price=Decimal("0.1446"))  # warn 2
+        self.assertEqual(log_mock.warning.call_count, 2)
+        self.assertEqual(log_mock.info.call_count, 1)
+        info_msg = log_mock.info.call_args[0][0]
+        self.assertIn("buy resumed", info_msg)
+
+    def test_no_log_on_cold_start_below_cap(self):
+        # Cold-start, no fills, cap=5 → no logs (lead=0, no engagement).
+        controller = self._make_controller(max_buy_lead=5)
+        log_mock = MagicMock()
+        setattr(controller, "logger", MagicMock(return_value=log_mock))
+        controller._build_create_action(target_price=Decimal("0.1446"))
+        log_mock.warning.assert_not_called()
+        log_mock.info.assert_not_called()
+
+    # --- Tracker integration ---
+
+    def test_buy_controller_records_each_new_fill_into_tracker(self):
+        # _update_fill_latch records via fill_tracker.record_buy_fill on
+        # every newly-counted executor. With one filled executor in the
+        # list, tracker.buys_filled should become 1.
+        controller = self._make_controller(max_buy_lead=None)
+        filled = MagicMock()
+        filled.is_active = False
+        filled.custom_info = {"executed_amount_base": "5"}
+        filled.config = MagicMock(spec=OrderExecutorConfig)
+        filled.config.price = Decimal("0.1446")
+        filled.id = "filled-1"
+        setattr(controller, "executors_info", [cast(ExecutorInfo, filled)])
+        self.assertEqual(fill_tracker.buys_filled("ERA-USDT"), 0)
+        controller._update_fill_latch()
+        self.assertEqual(fill_tracker.buys_filled("ERA-USDT"), 1)
+
+    def test_partial_fill_dedup_does_not_inflate_tracker(self):
+        # CRITICAL: same executor counted across ticks (growing partial
+        # fill amount) must increment the tracker EXACTLY ONCE. If a
+        # refactor breaks the _counted_fill_executor_ids guard, the
+        # tracker would over-count and the inventory cap would fire early.
+        controller = self._make_controller(max_buy_lead=None)
+        filled = MagicMock()
+        filled.is_active = True
+        filled.custom_info = {"executed_amount_base": "1"}
+        filled.config = MagicMock(spec=OrderExecutorConfig)
+        filled.config.price = Decimal("0.1446")
+        filled.id = "filled-1"
+        setattr(controller, "executors_info", [cast(ExecutorInfo, filled)])
+        controller._update_fill_latch()
+        filled.custom_info = {"executed_amount_base": "3"}
+        controller._update_fill_latch()
+        filled.custom_info = {"executed_amount_base": "5"}
+        controller._update_fill_latch()
+        self.assertEqual(fill_tracker.buys_filled("ERA-USDT"), 1)
 
 
 class TestBBOPegBuyDowngradeTrapScenario(IsolatedAsyncioWrapperTestCase):

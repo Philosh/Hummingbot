@@ -30,8 +30,10 @@ min_spread_pct: 0.020
 cancel_debounce_seconds: 2.0
 
 # N-shot fill latch (see buy-side config for the rationale). Symmetric
-# with the buy side so the sell controller can also re-quote up to 5 times.
-max_fills: 5
+# with the buy side so the sell controller can also re-quote up to 10 times,
+# matching the buy-side allowance so inventory accumulated by repeated
+# buys can be cleared.
+max_fills: 10
 
 manual_kill_switch: false
 initial_positions: []

@@ -24,12 +24,16 @@ min_spread_pct: 0.020
 # Same 2.0s cancel-debounce as XNO/WAVES — covers HTX cancel-WebSocket lag.
 cancel_debounce_seconds: 2.0
 
-# N-shot fill latch (1 = original one-shot behavior used by XNO and WAVES).
-# ERA gets 5 because its wider 3.5% natural spread + higher volume means
-# more round-trip opportunities per process. Each distinct executor counts
-# once (partial fills don't inflate the count). After 5 fills, controller
-# stops creating new orders for the process lifetime.
-max_fills: 5
+# N-shot fill latch (1 = original one-shot behavior used by XNO and WAVES
+# when those run). ERA gets 10 because its wider 3.5% natural spread and
+# higher volume support sustained round-tripping. Each distinct executor
+# counts once (partial fills don't inflate the count). After 10 fills, the
+# controller stops creating new orders for the process lifetime.
+#
+# Capital sizing reminder: this is the BUY side. Up to 10 buys × $20 each
+# = $200 USDT worth of ERA can accumulate if the sell side doesn't keep
+# pace. Make sure you have headroom for inventory growth.
+max_fills: 10
 
 manual_kill_switch: false
 initial_positions: []

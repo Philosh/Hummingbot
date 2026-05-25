@@ -1,19 +1,25 @@
 # Launcher config for v2_with_controllers.py.
-# Loads BBO peg buy + sell controllers for XNO-USDT, WAVES-USDT, ERA-USDT.
-# Capital required: ~$60 USDT (3 buys × $20) + sell-side requires existing
-# base inventory (XNO, WAVES, ERA) — pre-flight balance guard will silently
-# skip sell creates when balance is insufficient.
+# Currently running ONLY ERA-USDT (buy + sell). XNO and WAVES configs are
+# kept commented below so they can be re-enabled by uncommenting the
+# corresponding lines. Capital required for ERA-only: $20 USDT for the
+# open buy order + headroom for inventory growth (up to $200 if all 10
+# buys fill before sells clear).
 #
 # Per-token gate thresholds (min_spread_pct, calibrated ~60% of natural spread):
 #   XNO   = 0.020 (natural ~1.5-2%)
 #   WAVES = 0.014 (natural ~2.4%)
 #   ERA   = 0.020 (natural ~3.5%)
+#
+# Per-token max_fills:
+#   XNO   = 1 (default; one-shot)
+#   WAVES = 1 (default; one-shot)
+#   ERA   = 10 (N-shot for sustained round-tripping)
 script_file_name: v2_with_controllers.py
 controllers_config:
-  - conf_bbo_peg_xno.yml
-  - conf_bbo_peg_xno_sell.yml
-  - conf_bbo_peg_waves.yml
-  - conf_bbo_peg_waves_sell.yml
+  # - conf_bbo_peg_xno.yml          # disabled
+  # - conf_bbo_peg_xno_sell.yml     # disabled
+  # - conf_bbo_peg_waves.yml        # disabled
+  # - conf_bbo_peg_waves_sell.yml   # disabled
   - conf_bbo_peg_era.yml
   - conf_bbo_peg_era_sell.yml
 

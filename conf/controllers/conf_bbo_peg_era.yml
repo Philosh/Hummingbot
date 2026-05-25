@@ -1,0 +1,28 @@
+id: bbo_peg_era_htx
+controller_name: bbo_peg_buy
+controller_type: market_making
+
+connector_name: htx
+trading_pair: ERA-USDT
+
+# Single LIMIT_MAKER buy at external_best_bid + 1 tick (excluding our own
+# resting order). Order size = this / quoted price.
+total_amount_quote: 20
+
+# Seconds between controller ticks. Same 2.0s as XNO/WAVES — gives the
+# exchange order book WebSocket time to reflect our cancels before the
+# next walker pass.
+update_interval: 2.0
+
+# Anti-spoof gate, calibrated for ERA's ~3.5% natural spread.
+# Rule of thumb: gate ~60-70% of typical natural spread. 2.0% leaves ~1.5%
+# headroom within normal market conditions and fires only on meaningful
+# spread compression (i.e. real spoofing). If gate fires too often in calm
+# markets, lower; if spoofs slip through, raise.
+min_spread_pct: 0.020
+
+# Same 2.0s cancel-debounce as XNO/WAVES — covers HTX cancel-WebSocket lag.
+cancel_debounce_seconds: 2.0
+
+manual_kill_switch: false
+initial_positions: []

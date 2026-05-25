@@ -16,7 +16,7 @@
 # Per-token max_buy_lead (inventory cap; buys paused when ahead of sells):
 #   XNO   = None (disabled)
 #   WAVES = None (disabled)
-#   ERA   = 5 (≤5 unmatched buys allowed at any time)
+#   ERA   = 3 (≤3 unmatched buys allowed at any time)
 script_file_name: v2_with_controllers.py
 controllers_config:
   # - conf_bbo_peg_xno.yml          # disabled

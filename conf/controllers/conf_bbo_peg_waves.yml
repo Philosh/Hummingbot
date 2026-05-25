@@ -1,0 +1,29 @@
+id: bbo_peg_waves_htx
+controller_name: bbo_peg_buy
+controller_type: market_making
+
+connector_name: htx
+trading_pair: WAVES-USDT
+
+# Single LIMIT_MAKER buy at external_best_bid + 1 tick (excluding our own
+# resting order). Order size = this / quoted price.
+total_amount_quote: 20
+
+# Seconds between controller ticks. Same 2.0s as XNO — gives the exchange
+# order book WebSocket time to reflect our cancels before the next walker
+# pass.
+update_interval: 2.0
+
+# Anti-spoof gate, calibrated for WAVES's ~2.4% natural spread.
+# Rule of thumb: gate ~60-70% of typical natural spread. At 1.4%, the gate
+# fires when spread compresses meaningfully (suggesting a spoofer) but stays
+# clear in normal market conditions. If you observe the gate firing too
+# often in calm markets, lower this; if you observe spoofing slipping
+# through, raise it.
+min_spread_pct: 0.014
+
+# Same 2.0s cancel-debounce as XNO — covers HTX cancel-WebSocket lag.
+cancel_debounce_seconds: 2.0
+
+manual_kill_switch: false
+initial_positions: []

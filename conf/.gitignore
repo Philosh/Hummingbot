@@ -7,5 +7,7 @@
 # preferences/keys you don't want committed).
 !controllers/conf_bbo_peg_xno.yml
 !controllers/conf_bbo_peg_xno_sell.yml
+!controllers/conf_bbo_peg_waves.yml
+!controllers/conf_bbo_peg_waves_sell.yml
 !scripts/conf_v2_with_controllers_mm.yml
 !strategies/conf_pure_mm_xno_1.yml

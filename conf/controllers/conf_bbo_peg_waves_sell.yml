@@ -1,0 +1,33 @@
+id: bbo_peg_waves_htx_sell
+controller_name: bbo_peg_sell
+controller_type: market_making
+
+connector_name: htx
+trading_pair: WAVES-USDT
+
+# Single LIMIT_MAKER sell at external_best_ask - 1 tick (excluding our own
+# resting order). Order size = this / quoted price. Requires base inventory
+# (WAVES) on the account to actually fill. Pre-flight balance guard skips
+# the Create if insufficient and logs once per insufficient<->sufficient
+# transition.
+total_amount_quote: 20
+
+# Same 2.0s tick interval as the buy side.
+update_interval: 2.0
+
+# Anti-spoof gate calibrated for WAVES's ~2.4% natural spread (see the buy
+# config for the rationale). Same threshold on both sides keeps behavior
+# symmetric.
+#
+# NOTE: known cross-controller interaction (carried over from XNO). The
+# gate references raw best_bid (not self-excluded), so the buy controller's
+# own quote may compress the measured spread by 1 tick. With a 1.4%
+# threshold and WAVES's ~2.4% spread, there's a ~1% margin before that
+# compression matters in normal markets.
+min_spread_pct: 0.014
+
+# Same 2.0s cancel-debounce as XNO.
+cancel_debounce_seconds: 2.0
+
+manual_kill_switch: false
+initial_positions: []

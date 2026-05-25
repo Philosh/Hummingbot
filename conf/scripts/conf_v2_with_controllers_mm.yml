@@ -1,9 +1,14 @@
 # Launcher config for v2_with_controllers.py.
-# Loads BBO peg buy and sell controllers for XNO-USDT.
+# Loads BBO peg buy + sell controllers for XNO-USDT and WAVES-USDT.
+# Capital required: ~$80 USDT (2 buys × $20) + sell-side requires existing
+# base inventory (XNO and WAVES) — pre-flight balance guard will silently
+# skip sell creates when balance is insufficient.
 script_file_name: v2_with_controllers.py
 controllers_config:
   - conf_bbo_peg_xno.yml
   - conf_bbo_peg_xno_sell.yml
+  - conf_bbo_peg_waves.yml
+  - conf_bbo_peg_waves_sell.yml
 
 # Optional safety brakes (USDT). Comment out / set null to disable.
 # max_controller_drawdown_quote stops a single controller if its drawdown from peak exceeds this.

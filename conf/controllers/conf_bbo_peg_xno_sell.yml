@@ -1,0 +1,38 @@
+id: bbo_peg_xno_htx_sell
+controller_name: bbo_peg_sell
+controller_type: market_making
+
+connector_name: htx
+trading_pair: XNO-USDT
+
+# Single LIMIT_MAKER sell at external_best_ask - 1 tick (excluding our own
+# resting order). Order size = this / quoted price. Requires base inventory
+# (XNO) on the account to actually fill.
+total_amount_quote: 20
+
+# Seconds between controller ticks. Lower = faster reaction, more REST traffic.
+# Same 2.0s as the buy side to give the exchange order book WebSocket time to
+# reflect our cancels before the next walker pass — without it the walker
+# chases its own just-cancelled orders as if they were external asks.
+update_interval: 2.0
+
+# Anti-spoof gate. Refuse to quote when the external market spread
+# (external_best_ask - best_bid) / external_best_ask is below this.
+# Default 0.02 = 2%.
+#
+# NOTE: known interaction when buy and sell controllers run together. The
+# gate references raw best_bid (not self-excluded), so the buy controller's
+# own quote may compress the measured spread by 1 tick. In a market with a
+# natural spread close to this threshold, both sides may end up in a cancel-
+# loop. Not fixed in this iteration — track via [bbo_peg_sell] gate_* logs.
+min_spread_pct: 0.02
+
+# How long to remember each just-cancelled order's (price, amount) so the
+# walker keeps treating it as ours during the cancel-propagation lag window.
+# Without this, the walker chases its own just-cancelled orders as if they
+# were external asks (descending chase direction on the sell side). 2s
+# covers typical HTX cancel-WebSocket latency; set to 0 to disable.
+cancel_debounce_seconds: 2.0
+
+manual_kill_switch: false
+initial_positions: []

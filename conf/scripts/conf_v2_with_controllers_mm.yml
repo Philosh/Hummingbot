@@ -1,8 +1,9 @@
 # Launcher config for v2_with_controllers.py.
-# Loads the BBO peg buy controller (XNO) only.
+# Loads BBO peg buy and sell controllers for XNO-USDT.
 script_file_name: v2_with_controllers.py
 controllers_config:
   - conf_bbo_peg_xno.yml
+  - conf_bbo_peg_xno_sell.yml
 
 # Optional safety brakes (USDT). Comment out / set null to disable.
 # max_controller_drawdown_quote stops a single controller if its drawdown from peak exceeds this.

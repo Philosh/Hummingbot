@@ -1,0 +1,28 @@
+id: bbo_peg_glmr_htx
+controller_name: bbo_peg_buy
+controller_type: market_making
+
+connector_name: htx
+trading_pair: GLMR-USDT
+
+# Single LIMIT_MAKER buy at external_best_bid + 1 tick. $11 per side.
+total_amount_quote: 11
+
+# 3.0s tick; cancel_debounce_seconds (2.0) still exceeds it.
+update_interval: 3.0
+
+# Anti-spoof gate for GLMR (~3.1% live spread, 60% rule → ~1.9%).
+# GLMR = Moonbeam Polkadot parachain. Real project.
+# WARNING: very CHUNKY 0.78% tick — even more than AUDIO. At 2% gate, in the
+# 2-3% spread range, captured = spread - 1.56% (two ticks). After 0.4% fees
+# + 0.3% adverse selection, net is -0.36% to +0.74% per round-trip. Only
+# profits at wider spreads. Volume $320k is also below our usual $500k floor
+# — fills may be slower.
+min_spread_pct: 0.020
+
+cancel_debounce_seconds: 2.0
+max_fills: 10
+max_buy_lead: 1
+
+manual_kill_switch: false
+initial_positions: []

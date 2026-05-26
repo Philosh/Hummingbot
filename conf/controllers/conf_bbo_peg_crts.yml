@@ -1,0 +1,26 @@
+id: bbo_peg_crts_htx
+controller_name: bbo_peg_buy
+controller_type: market_making
+
+connector_name: htx
+trading_pair: CRTS-USDT
+
+# Single LIMIT_MAKER buy at external_best_bid + 1 tick. $11 per side.
+total_amount_quote: 11
+
+# 3.0s tick.
+update_interval: 3.0
+
+# Anti-spoof gate for CRTS (~1.8% live spread, 60% rule → ~1.1%).
+# CRTS = Cratos (decentralized data/research platform).
+# Clean 0.01% tick (sub-cent token, tick is 1e-8). Most of the spread is
+# captured after ticks.
+# WARNING: 24h volume only $181k — quotes may take time to fill.
+min_spread_pct: 0.011
+
+cancel_debounce_seconds: 2.0
+max_fills: 10
+max_buy_lead: 1
+
+manual_kill_switch: false
+initial_positions: []

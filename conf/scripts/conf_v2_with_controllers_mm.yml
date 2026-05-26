@@ -1,18 +1,18 @@
 # Launcher config for v2_with_controllers.py.
-# Running PYR + AUDIO + SIS on HTX (3 tokens, 6 controllers). Clean reset
-# after multiple cycles of "screener-picks-then-collapse" (XMN/MIRA/A8).
-# These three are picked from a user-curated list, all are HTX-status OK,
-# and PYR + AUDIO have real-product fundamentals (Vulcan Forged gaming,
-# Audius music streaming) — less likely to vanish in minutes than
-# unfamiliar small-caps.
+# Running PYR + AUDIO + SIS + GLMR + FLOW + CRTS on HTX (6 tokens, 12 controllers).
+# Added GLMR/FLOW/CRTS as additional MM candidates from user-curated list —
+# all have wider spreads or chunky ticks but pass HTX deposit/withdraw status.
 #
-# Capital: ~$33 USDT open (3 × $11 buys), max ~$33 inventory
+# Capital: ~$66 USDT open (6 × $11 buys), max ~$66 inventory
 # (with max_buy_lead=1, each token caps at 1 × $11 unmatched).
 #
 # Per-token gate thresholds (min_spread_pct, calibrated ~60% of natural spread):
 #   PYR    = 0.014 (live spread ~2.3%; clean 0.041% tick)
 #   AUDIO  = 0.014 (lowered from 0.022 after live spread compressed to ~1.5%)
-#   SIS    = 0.030 (live spread ~5.2%; chunky 0.51% tick, highest-risk pick)
+#   SIS    = 0.030 (live spread ~5.2%; chunky 0.51% tick, highest-risk)
+#   GLMR   = 0.020 (live spread ~3.1%; VERY chunky 0.78% tick)
+#   FLOW   = 0.020 (spread fluctuates 2.5-8%; clean tick, but only $42k volume)
+#   CRTS   = 0.011 (live spread ~1.8%; clean tick, $181k volume)
 #
 # Per-token max_fills (process-lifetime fill cap): all currently-enabled = 10
 # Per-token max_buy_lead (inventory cap): all currently-enabled = 1
@@ -46,6 +46,12 @@ controllers_config:
   - conf_bbo_peg_audio_sell.yml
   - conf_bbo_peg_sis.yml
   - conf_bbo_peg_sis_sell.yml
+  - conf_bbo_peg_glmr.yml
+  - conf_bbo_peg_glmr_sell.yml
+  - conf_bbo_peg_flow.yml
+  - conf_bbo_peg_flow_sell.yml
+  - conf_bbo_peg_crts.yml
+  - conf_bbo_peg_crts_sell.yml
 
 # Optional safety brakes (USDT). Comment out / set null to disable.
 # max_controller_drawdown_quote stops a single controller if its drawdown from peak exceeds this.

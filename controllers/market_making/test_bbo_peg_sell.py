@@ -2232,6 +2232,117 @@ class TestBBOPegSellBuildCreateAction(unittest.TestCase):
         log_mock.warning.assert_not_called()
         log_mock.info.assert_not_called()
 
+    # --- Same-tick cancel credit ---
+
+    def test_stops_this_tick_credit_unblocks_create_when_own_order_holds_inventory(
+        self,
+    ):
+        # Production scenario (the bug this fix targets): our own active SELL
+        # at 0.4400 locks ~45 XNO of inventory; the connector's
+        # get_available_balance subtracts that, returning ~5. On the next tick
+        # the external best ask moves to 0.4381, so the controller emits a
+        # Stop for the 0.4400 order and tries to create a new one at 0.4381.
+        # Without the credit, the create would be blocked (have=5, need=45)
+        # even though the Stop releases 45 of inventory in this same tick.
+        controller = self._make_controller()
+        controller.market_data_provider.get_available_balance.return_value = Decimal(  # type: ignore[attr-defined]  # ty: ignore[unresolved-attribute]  # pyright: ignore[reportAttributeAccessIssue]
+            "5"
+        )
+        # quote=20, target=0.4381 → required = 20 / 0.4381 ≈ 45.65 XNO.
+        # Inventory being released by the same-tick Stop: 45.
+        # Effective = 5 + 45 = 50, which covers the 45.65 needed.
+        stale = [_fake_executor(price=Decimal("0.4400"), amount=Decimal("45"))]
+        result = controller._build_create_action(
+            target_price=Decimal("0.4381"), stops_this_tick=stale
+        )
+        self.assertIsInstance(result, CreateExecutorAction)
+
+    def test_stops_this_tick_credit_does_not_allow_oversell(self):
+        # Safety: if available + about-to-release is still below required,
+        # the Create must still be blocked. Prevents the credit from masking
+        # a genuine insufficient-inventory situation.
+        controller = self._make_controller()
+        controller.market_data_provider.get_available_balance.return_value = Decimal(  # type: ignore[attr-defined]  # ty: ignore[unresolved-attribute]  # pyright: ignore[reportAttributeAccessIssue]
+            "5"
+        )
+        # required ≈ 45.65; available=5 + stop_amount=10 = 15. Still short.
+        stale = [_fake_executor(price=Decimal("0.4400"), amount=Decimal("10"))]
+        result = controller._build_create_action(
+            target_price=Decimal("0.4381"), stops_this_tick=stale
+        )
+        self.assertIsNone(result)
+
+    def test_stops_this_tick_credit_sums_multiple_stops(self):
+        # Walker may need to cancel >1 of our own orders in a single tick
+        # (e.g., we have two at different stale prices after a partial fill +
+        # re-quote). The credit must include the full sum of amounts being
+        # released, not just the first one.
+        controller = self._make_controller()
+        controller.market_data_provider.get_available_balance.return_value = Decimal(  # type: ignore[attr-defined]  # ty: ignore[unresolved-attribute]  # pyright: ignore[reportAttributeAccessIssue]
+            "5"
+        )
+        # required ≈ 45.65. Two stops of 20 + 25 = 45. Effective = 50.
+        stale = [
+            _fake_executor(price=Decimal("0.4400"), amount=Decimal("20")),
+            _fake_executor(price=Decimal("0.4405"), amount=Decimal("25")),
+        ]
+        result = controller._build_create_action(
+            target_price=Decimal("0.4381"), stops_this_tick=stale
+        )
+        self.assertIsInstance(result, CreateExecutorAction)
+
+    def test_stops_this_tick_default_empty_preserves_old_behavior(self):
+        # Backward-compatibility pin: callers that don't pass stops_this_tick
+        # (the kwarg defaults to None) get exactly the pre-fix behavior —
+        # raw available_balance comparison with no credit. This guards
+        # against accidentally swallowing real insufficient-balance states
+        # if a future refactor stops threading stops through.
+        controller = self._make_controller()
+        controller.market_data_provider.get_available_balance.return_value = Decimal(  # type: ignore[attr-defined]  # ty: ignore[unresolved-attribute]  # pyright: ignore[reportAttributeAccessIssue]
+            "5"
+        )
+        # No stops_this_tick passed → required 45.65 vs available 5 → blocked.
+        result = controller._build_create_action(target_price=Decimal("0.4381"))
+        self.assertIsNone(result)
+
+    def test_stops_this_tick_ignores_non_order_executor_configs(self):
+        # Defensive: if an executor in stops_this_tick has a non-
+        # OrderExecutorConfig (e.g., a position-executor placeholder),
+        # its amount must NOT be credited — we don't know what locked the
+        # inventory in that case. Mirror of the same defensive filter in
+        # _compute_own_volume_by_price.
+        controller = self._make_controller()
+        controller.market_data_provider.get_available_balance.return_value = Decimal(  # type: ignore[attr-defined]  # ty: ignore[unresolved-attribute]  # pyright: ignore[reportAttributeAccessIssue]
+            "5"
+        )
+        not_an_order = _fake_executor(
+            price=Decimal("0.4400"),
+            amount=Decimal("45"),
+            use_order_executor_config=False,
+        )
+        result = controller._build_create_action(
+            target_price=Decimal("0.4381"), stops_this_tick=[not_an_order]
+        )
+        self.assertIsNone(result)
+
+    def test_insufficient_log_includes_credit_breakdown(self):
+        # When the credit-augmented balance is still insufficient, the
+        # warning log must show the breakdown (raw available + credit =
+        # effective) so a reader can tell at a glance whether the issue is
+        # "no inventory at all" vs "stops too small to cover the new size".
+        controller = self._make_controller()
+        log_mock = MagicMock()
+        setattr(controller, "logger", MagicMock(return_value=log_mock))
+        controller.market_data_provider.get_available_balance.return_value = Decimal(  # type: ignore[attr-defined]  # ty: ignore[unresolved-attribute]  # pyright: ignore[reportAttributeAccessIssue]
+            "5"
+        )
+        stale = [_fake_executor(price=Decimal("0.4400"), amount=Decimal("10"))]
+        controller._build_create_action(
+            target_price=Decimal("0.4381"), stops_this_tick=stale
+        )
+        warning_msg = log_mock.warning.call_args[0][0]
+        self.assertIn("releasing this tick", warning_msg)
+
 
 class TestBBOPegSellBuildStopActions(unittest.TestCase):
     """Direct unit tests for _build_stop_actions in isolation.
@@ -2740,11 +2851,15 @@ class TestBBOPegSellUpdateFillLatch(unittest.TestCase):
         # With max_fills=2, a single filled executor should not gate the
         # controller — we still want a second create/fill cycle.
         controller = self._make_controller_with_max_fills(max_fills=2)
-        setattr(controller, "executors_info", [
-            self._fake_executor_with_fill_and_id(
-                eid="exec-1", executed_amount_base=Decimal("5")
-            ),
-        ])
+        setattr(
+            controller,
+            "executors_info",
+            [
+                self._fake_executor_with_fill_and_id(
+                    eid="exec-1", executed_amount_base=Decimal("5")
+                ),
+            ],
+        )
         controller._update_fill_latch()
         self.assertEqual(controller._fill_count, 1)
         self.assertFalse(controller._has_filled)
@@ -2752,14 +2867,18 @@ class TestBBOPegSellUpdateFillLatch(unittest.TestCase):
     def test_max_fills_two_trips_on_second_distinct_fill(self):
         # Two distinct executors with fills → count=2, latch trips.
         controller = self._make_controller_with_max_fills(max_fills=2)
-        setattr(controller, "executors_info", [
-            self._fake_executor_with_fill_and_id(
-                eid="exec-1", executed_amount_base=Decimal("5")
-            ),
-            self._fake_executor_with_fill_and_id(
-                eid="exec-2", executed_amount_base=Decimal("3")
-            ),
-        ])
+        setattr(
+            controller,
+            "executors_info",
+            [
+                self._fake_executor_with_fill_and_id(
+                    eid="exec-1", executed_amount_base=Decimal("5")
+                ),
+                self._fake_executor_with_fill_and_id(
+                    eid="exec-2", executed_amount_base=Decimal("3")
+                ),
+            ],
+        )
         controller._update_fill_latch()
         self.assertEqual(controller._fill_count, 2)
         self.assertTrue(controller._has_filled)
@@ -3062,9 +3181,7 @@ class TestBBOPegSellDetermineExecutorActions(unittest.TestCase):
             max_fills=5,
         )
         controller._fill_count = 5
-        controller._counted_fill_executor_ids.update(
-            f"prior-{i}" for i in range(5)
-        )
+        controller._counted_fill_executor_ids.update(f"prior-{i}" for i in range(5))
         actions = controller.determine_executor_actions()
         stops = [a for a in actions if isinstance(a, StopExecutorAction)]
         creates = [a for a in actions if isinstance(a, CreateExecutorAction)]
@@ -3135,9 +3252,13 @@ class TestBBOPegSellFillTrackerIntegration(unittest.TestCase):
 
     def test_sell_controller_records_each_new_fill_into_tracker(self):
         controller = self._make_controller()
-        setattr(controller, "executors_info", [
-            self._fake_executor_with_fill(eid="s1", executed_amount_base="5"),
-        ])
+        setattr(
+            controller,
+            "executors_info",
+            [
+                self._fake_executor_with_fill(eid="s1", executed_amount_base="5"),
+            ],
+        )
         self.assertEqual(fill_tracker.sells_filled("ERA-USDT"), 0)
         controller._update_fill_latch()
         self.assertEqual(fill_tracker.sells_filled("ERA-USDT"), 1)
@@ -3162,9 +3283,13 @@ class TestBBOPegSellFillTrackerIntegration(unittest.TestCase):
         fill_tracker.record_buy_fill("ERA-USDT")
         fill_tracker.record_buy_fill("ERA-USDT")
         controller = self._make_controller()
-        setattr(controller, "executors_info", [
-            self._fake_executor_with_fill(eid="s1", executed_amount_base="5"),
-        ])
+        setattr(
+            controller,
+            "executors_info",
+            [
+                self._fake_executor_with_fill(eid="s1", executed_amount_base="5"),
+            ],
+        )
         controller._update_fill_latch()
         self.assertEqual(fill_tracker.buy_lead("ERA-USDT"), 1)
 

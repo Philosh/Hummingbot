@@ -386,7 +386,7 @@ class BBOPegSellController(ControllerBase):
             return actions
 
         if not in_tolerance:
-            create = self._build_create_action(target_price)
+            create = self._build_create_action(target_price, stops_this_tick=stale)
             if create is not None:
                 actions.append(create)
 
@@ -513,13 +513,19 @@ class BBOPegSellController(ControllerBase):
         ]
 
     def _build_create_action(
-        self, target_price: Decimal
+        self,
+        target_price: Decimal,
+        stops_this_tick: Optional[List[ExecutorInfo]] = None,
     ) -> Optional[CreateExecutorAction]:
         """Build a LIMIT_MAKER sell at target_price.
         Returns None if quantized amount is zero (book can't support an
         order) or if the account's available base balance is below the
         required amount (pre-flight check that prevents the framework's
         downstream INSUFFICIENT_BALANCE log spam at every tick).
+
+        ``stops_this_tick`` is the list of our own active executors being
+        cancelled in this same tick; their amounts are credited back to the
+        balance check (see _has_sufficient_base_balance).
         """
         amount = self.market_data_provider.quantize_order_amount(
             self.config.connector_name,
@@ -528,7 +534,7 @@ class BBOPegSellController(ControllerBase):
         )
         if amount <= 0:
             return None
-        if not self._has_sufficient_base_balance(amount):
+        if not self._has_sufficient_base_balance(amount, stops_this_tick or []):
             return None
         return CreateExecutorAction(
             controller_id=self.config.id,
@@ -543,10 +549,26 @@ class BBOPegSellController(ControllerBase):
             ),
         )
 
-    def _has_sufficient_base_balance(self, required_amount: Decimal) -> bool:
+    def _has_sufficient_base_balance(
+        self,
+        required_amount: Decimal,
+        stops_this_tick: List[ExecutorInfo],
+    ) -> bool:
         """Read the connector's available base balance and compare to the
         amount we're about to attempt to sell. Returns False if insufficient
         (caller skips emitting the Create).
+
+        ``stops_this_tick`` is the list of our own active executors being
+        cancelled in this same tick. Their amounts are credited back to the
+        available balance because the connector's ``get_available_balance``
+        subtracts amounts locked in our own open orders, but those locks
+        are about to be released by the Stop actions emitted earlier in
+        this same tick. Without this credit, a quote-walk that cancels and
+        re-creates triggers a self-inflicted insufficient-balance loop:
+        new order blocked → cancel propagates → balance recovers → new
+        order placed → external moves → cancel + try create → blocked
+        again. Result is ~50% duty cycle, orders live in book for only
+        ~3s, far too brief to fill.
 
         Emits a state-transition log: warning on insufficient->sufficient,
         info on recovery. Rate-limited via _balance_insufficient_logged so
@@ -556,11 +578,22 @@ class BBOPegSellController(ControllerBase):
         available = self.market_data_provider.get_available_balance(
             self.config.connector_name, base_asset
         )
-        if available < required_amount:
+        pending_release = sum(
+            (
+                e.config.amount
+                for e in stops_this_tick
+                if isinstance(e.config, OrderExecutorConfig)
+                and e.config.amount is not None
+            ),
+            Decimal("0"),
+        )
+        effective_available = available + pending_release
+        if effective_available < required_amount:
             if not self._balance_insufficient_logged:
                 self.logger().warning(
                     f"{self.config.log_prefix} insufficient {base_asset} balance: "
-                    f"have {available}, need {required_amount}. "
+                    f"have {available} (+{pending_release} releasing this tick "
+                    f"= {effective_available}), need {required_amount}. "
                     f"Suppressing further warnings until balance recovers."
                 )
                 self._balance_insufficient_logged = True
@@ -568,7 +601,8 @@ class BBOPegSellController(ControllerBase):
         if self._balance_insufficient_logged:
             self.logger().info(
                 f"{self.config.log_prefix} {base_asset} balance recovered: "
-                f"have {available}, need {required_amount}. Resuming quotes."
+                f"have {available} (+{pending_release} releasing this tick "
+                f"= {effective_available}), need {required_amount}. Resuming quotes."
             )
             self._balance_insufficient_logged = False
         return True

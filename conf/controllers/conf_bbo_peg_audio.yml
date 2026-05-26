@@ -8,8 +8,8 @@ trading_pair: AUDIO-USDT
 # Single LIMIT_MAKER buy at external_best_bid + 1 tick. $11 per side.
 total_amount_quote: 11
 
-# 1.0s tick; cancel_debounce_seconds (2.0) still exceeds it.
-update_interval: 1.0
+# 3.0s tick; cancel_debounce_seconds (2.0) still exceeds it.
+update_interval: 3.0
 
 # Anti-spoof gate calibrated for AUDIO's ~3.6% natural spread (60% of spread).
 # AUDIO = Audius decentralized music streaming. Real project with real users.

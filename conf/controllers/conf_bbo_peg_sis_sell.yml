@@ -6,7 +6,7 @@ connector_name: htx
 trading_pair: SIS-USDT
 
 total_amount_quote: 11
-update_interval: 1.0
+update_interval: 3.0
 min_spread_pct: 0.030
 cancel_debounce_seconds: 2.0
 max_fills: 10

@@ -8,8 +8,8 @@ trading_pair: PYR-USDT
 # Single LIMIT_MAKER buy at external_best_bid + 1 tick. $11 per side.
 total_amount_quote: 11
 
-# 1.0s tick; cancel_debounce_seconds (2.0) still exceeds it.
-update_interval: 1.0
+# 3.0s tick; cancel_debounce_seconds (2.0) still exceeds it.
+update_interval: 3.0
 
 # Anti-spoof gate calibrated for PYR's ~2.3% natural spread (60% of spread).
 # PYR = Vulcan Forged gaming/NFT token. Clean 0.041% tick — XNO-analog

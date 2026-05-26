@@ -17,7 +17,7 @@ from __future__ import annotations
 import time
 from dataclasses import dataclass
 from decimal import Decimal
-from typing import List, Optional
+from typing import List, Optional, Set
 
 import requests
 
@@ -25,6 +25,7 @@ import requests
 HTX_TICKERS_URL = "https://api.huobi.pro/market/tickers"
 HTX_SYMBOLS_URL = "https://api.huobi.pro/v1/common/symbols"
 HTX_DEPTH_URL = "https://api.huobi.pro/market/depth"
+HTX_CURRENCIES_URL = "https://api.huobi.pro/v2/reference/currencies"
 
 # Screening thresholds, calibrated for HTX 0.2% maker fee (no discounts):
 # round-trip fees = 0.4%, adverse selection drag ~0.2-0.5%, so we need
@@ -87,8 +88,45 @@ def fetch_depth(symbol: str) -> Optional[dict]:
         return None
 
 
-def initial_screen(tickers: List[dict], symbols: dict) -> List[Candidate]:
-    """First pass: filter by 24h ticker (price, volume) — no per-pair HTTP."""
+def fetch_movable_bases() -> Set[str]:
+    """Return the set of base asset symbols where HTX currently has at least
+    one chain with BOTH deposit AND withdrawal allowed.
+
+    Even though an MM strategy doesn't deposit or withdraw during normal
+    operation (you trade against existing inventory), a suspension is a
+    strong red flag:
+      - Withdrawal off → any inventory you accumulate is trapped on HTX.
+      - Deposit off → you can't replenish base if you sell down to zero.
+      - Both off → usually signals chain issues, listing review, or pending
+        delisting. Risky to MM into a token that may soon stop trading.
+
+    Filtering these out is the safe default for MM candidate selection.
+    """
+    r = requests.get(HTX_CURRENCIES_URL, timeout=15)
+    r.raise_for_status()
+    out: Set[str] = set()
+    for c in r.json().get("data", []):
+        base = c.get("currency", "").lower()  # match the lowercase symbols
+        if not base:
+            continue
+        for chain in c.get("chains", []):
+            if (chain.get("depositStatus") == "allowed"
+                    and chain.get("withdrawStatus") == "allowed"):
+                out.add(base)
+                break
+    return out
+
+
+def initial_screen(
+    tickers: List[dict],
+    symbols: dict,
+    movable_bases: Set[str],
+) -> List[Candidate]:
+    """First pass: filter by 24h ticker (price, volume) — no per-pair HTTP.
+
+    Also drops bases not in `movable_bases` — i.e., tokens where HTX has
+    deposit or withdrawal suspended on all chains. See fetch_movable_bases.
+    """
     out: List[Candidate] = []
     for t in tickers:
         sym = t["symbol"]
@@ -110,6 +148,10 @@ def initial_screen(tickers: List[dict], symbols: dict) -> List[Candidate]:
         base = sym[:-4]
         # Skip leveraged tokens (HTX has 3L/3S/5L/5S suffixed pairs).
         if any(base.endswith(x) for x in ("3l", "3s", "5l", "5s")):
+            continue
+        # Skip tokens where HTX has suspended deposit or withdrawal on all
+        # chains — even if their book looks tradeable, they're risky to MM.
+        if base not in movable_bases:
             continue
         out.append(Candidate(symbol=sym, base=base, price=price, volume_usdt=vol))
     return out
@@ -182,13 +224,15 @@ def score(c: Candidate) -> Decimal:
 
 
 def main():
-    print("Fetching HTX tickers + symbol metadata...")
+    print("Fetching HTX tickers + symbol metadata + deposit/withdrawal status...")
     tickers = fetch_tickers()
     symbols = fetch_symbols()
+    movable_bases = fetch_movable_bases()
+    print(f"  {len(movable_bases)} bases have deposit + withdrawal allowed on >= 1 chain")
 
-    candidates = initial_screen(tickers, symbols)
-    print(f"  {len(candidates)} pairs survived price/volume screen "
-          f"({MIN_VOLUME_USDT}-{MAX_VOLUME_USDT} USDT 24h vol)")
+    candidates = initial_screen(tickers, symbols, movable_bases)
+    print(f"  {len(candidates)} pairs survived price/volume/movable screen "
+          f"({MIN_VOLUME_USDT}-{MAX_VOLUME_USDT} USDT 24h vol, status=allowed)")
 
     print(f"Fetching order books for top-volume {min(len(candidates), 80)} candidates...")
     # Hit the top N by volume to keep the rate-limit budget reasonable.

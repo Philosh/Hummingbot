@@ -160,9 +160,14 @@ def initial_screen(
 def enrich_with_book(candidates: List[Candidate], symbols: dict) -> List[Candidate]:
     """Second pass: per-pair order book fetch to get live spread + tick.
     Rate-limited (HTX public: 100 req / 10s); we sleep 0.1s between calls.
+    Logs progress every 50 candidates since a full scan of ~350 pairs takes
+    ~35s and looks hung without feedback.
     """
     enriched: List[Candidate] = []
-    for c in candidates:
+    total = len(candidates)
+    for i, c in enumerate(candidates, start=1):
+        if i % 50 == 0 or i == total:
+            print(f"    ...checked {i}/{total} order books")
         sym_info = symbols[c.symbol]
         price_precision = int(sym_info.get("price-precision", 8))
         tick = Decimal(10) ** -price_precision
@@ -234,10 +239,14 @@ def main():
     print(f"  {len(candidates)} pairs survived price/volume/movable screen "
           f"({MIN_VOLUME_USDT}-{MAX_VOLUME_USDT} USDT 24h vol, status=allowed)")
 
-    print(f"Fetching order books for top-volume {min(len(candidates), 80)} candidates...")
-    # Hit the top N by volume to keep the rate-limit budget reasonable.
+    print(f"Fetching order books for all {len(candidates)} survivors "
+          f"(~{len(candidates) // 10}s at HTX's 10 req/s rate)...")
+    # Scan every survivor — earlier versions capped at top-80 by volume which
+    # hid real opportunities at the mid-volume tier (PYR at $800k vol +
+    # 4.77% spread got missed). HTX public depth allows 100 req / 10s; the
+    # 0.1s sleep inside enrich_with_book keeps us at the limit.
     candidates.sort(key=lambda c: c.volume_usdt, reverse=True)
-    candidates = enrich_with_book(candidates[:80], symbols)
+    candidates = enrich_with_book(candidates, symbols)
 
     survivors = [c for c in candidates if passes_book_filters(c)]
     for c in survivors:

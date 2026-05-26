@@ -11,13 +11,16 @@ total_amount_quote: 11
 # 3.0s tick; cancel_debounce_seconds (2.0) still exceeds it.
 update_interval: 3.0
 
-# Anti-spoof gate calibrated for AUDIO's ~3.6% natural spread (60% of spread).
-# AUDIO = Audius decentralized music streaming. Real project with real users.
-# IMPORTANT: chunky 0.52% tick — each peg adjustment moves ~half a percent of
-# price. The 3.6% spread is wide enough to absorb 2 chunky ticks and still
-# leave 2.6% captured, but expect bigger discrete jumps on each cancel-replace
-# cycle than on XNO/WAVES.
-min_spread_pct: 0.022
+# Anti-spoof gate, lowered 0.022 → 0.014 after observing AUDIO's spread
+# compressed from 3.6% (screener snapshot) to ~1.5% live. At 0.022 the
+# gate was canceling sells within 3s of posting them and the bot was
+# silent most of the time.
+# WARNING: AUDIO has a CHUNKY 0.52% tick. At 1.4% gate, in the 1.4-2%
+# spread range, captured = spread - 1.04% (two ticks). After 0.4% fees
+# + 0.3% adverse selection, net is -0.34% to +0.26% per round-trip in
+# that range. Only when spread > 2% does the trade profit. Lowering the
+# gate trades activity for win-rate. Raise back to 0.022 if PnL goes red.
+min_spread_pct: 0.014
 
 cancel_debounce_seconds: 2.0
 max_fills: 10

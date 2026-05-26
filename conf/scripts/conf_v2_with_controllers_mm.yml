@@ -11,7 +11,7 @@
 #
 # Per-token gate thresholds (min_spread_pct, calibrated ~60% of natural spread):
 #   PYR    = 0.014 (live spread ~2.3%; clean 0.041% tick)
-#   AUDIO  = 0.022 (live spread ~3.6%; chunky 0.52% tick)
+#   AUDIO  = 0.014 (lowered from 0.022 after live spread compressed to ~1.5%)
 #   SIS    = 0.030 (live spread ~5.2%; chunky 0.51% tick, highest-risk pick)
 #
 # Per-token max_fills (process-lifetime fill cap): all currently-enabled = 10

@@ -6,24 +6,28 @@ connector_name: htx
 trading_pair: WAVES-USDT
 
 # Single LIMIT_MAKER buy at external_best_bid + 1 tick (excluding our own
-# resting order). Order size = this / quoted price.
-total_amount_quote: 20
+# resting order). Order size = this / quoted price. Smaller $11 per side
+# to spread capital across WAVES + ACTSOL + BLUE.
+total_amount_quote: 11
 
-# Seconds between controller ticks. Same 2.0s as XNO — gives the exchange
-# order book WebSocket time to reflect our cancels before the next walker
-# pass.
-update_interval: 2.0
+# Seconds between controller ticks. 1.0s for quicker reaction.
+# cancel_debounce_seconds (2.0) still exceeds this interval so the walker
+# continues to dedupe ghost cancels through the WebSocket propagation lag.
+update_interval: 1.0
 
-# Anti-spoof gate, calibrated for WAVES's ~2.4% natural spread.
-# Rule of thumb: gate ~60-70% of typical natural spread. At 1.4%, the gate
-# fires when spread compresses meaningfully (suggesting a spoofer) but stays
-# clear in normal market conditions. If you observe the gate firing too
-# often in calm markets, lower this; if you observe spoofing slipping
-# through, raise it.
+# Anti-spoof gate, calibrated for WAVES's ~2% live natural spread.
+# Rule of thumb: gate ~60-70% of typical natural spread.
 min_spread_pct: 0.014
 
 # Same 2.0s cancel-debounce as XNO — covers HTX cancel-WebSocket lag.
 cancel_debounce_seconds: 2.0
+
+# N-shot fill latch: 10 distinct fills per process before this side latches.
+max_fills: 10
+
+# Inventory cap: pause buys when (buys - sells) >= 3 on WAVES-USDT, so the
+# buy side can't accumulate more than ~$33 of WAVES (3 × $11 quote).
+max_buy_lead: 3
 
 manual_kill_switch: false
 initial_positions: []

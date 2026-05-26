@@ -1,30 +1,29 @@
 # Launcher config for v2_with_controllers.py.
-# Currently running ERA-USDT (buy + sell). XNO and WAVES configs remain
-# commented. Both ERA controllers tick at 1.0s (faster than the 2.0s
-# default) for quicker reaction to the leapfrog-spoof pattern.
+# Running WAVES + ACTSOL + BLUE on HTX (3 tokens, buy+sell each = 6 controllers).
+# ERA paused — its live spread compressed below the break-even floor.
+# All three new tokens use total_amount_quote=$11, max_fills=10, max_buy_lead=3
+# (so max inventory accumulation per token ~$33; max across all three ~$99).
+# Capital required: ~$33 USDT for open buy orders + base inventory headroom.
 #
 # Per-token gate thresholds (min_spread_pct, calibrated ~60% of natural spread):
-#   XNO   = 0.020 (natural ~1.5-2%)
-#   WAVES = 0.014 (natural ~2.4%)
-#   ERA   = 0.015 (lowered from 0.020 after observing live spread compress to 1.5-2%)
+#   WAVES   = 0.014 (live spread ~2%)
+#   ACTSOL  = 0.025 (live spread ~4.2%)
+#   BLUE    = 0.025 (live spread ~4.3%; coarse tick 0.6% caveat — see config)
 #
-# Per-token max_fills (process-lifetime fill cap):
-#   XNO   = 1 (default; one-shot)
-#   WAVES = 1 (default; one-shot)
-#   ERA   = 10 (N-shot for sustained round-tripping)
-#
-# Per-token max_buy_lead (inventory cap; buys paused when ahead of sells):
-#   XNO   = None (disabled)
-#   WAVES = None (disabled)
-#   ERA   = 3 (≤3 unmatched buys allowed at any time)
+# Per-token max_fills (process-lifetime fill cap): all currently-enabled = 10
+# Per-token max_buy_lead (inventory cap): all currently-enabled = 3
 script_file_name: v2_with_controllers.py
 controllers_config:
   # - conf_bbo_peg_xno.yml          # disabled
   # - conf_bbo_peg_xno_sell.yml     # disabled
-  # - conf_bbo_peg_waves.yml        # disabled
-  # - conf_bbo_peg_waves_sell.yml   # disabled
-  - conf_bbo_peg_era.yml
-  - conf_bbo_peg_era_sell.yml
+  # - conf_bbo_peg_era.yml          # disabled (spread compressed below break-even)
+  # - conf_bbo_peg_era_sell.yml     # disabled (spread compressed below break-even)
+  - conf_bbo_peg_waves.yml
+  - conf_bbo_peg_waves_sell.yml
+  - conf_bbo_peg_actsol.yml
+  - conf_bbo_peg_actsol_sell.yml
+  - conf_bbo_peg_blue.yml
+  - conf_bbo_peg_blue_sell.yml
 
 # Optional safety brakes (USDT). Comment out / set null to disable.
 # max_controller_drawdown_quote stops a single controller if its drawdown from peak exceeds this.

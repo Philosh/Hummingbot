@@ -10,10 +10,11 @@ trading_pair: WAVES-USDT
 # (WAVES) on the account to actually fill. Pre-flight balance guard skips
 # the Create if insufficient and logs once per insufficient<->sufficient
 # transition.
-total_amount_quote: 20
+total_amount_quote: 11
 
-# Same 2.0s tick interval as the buy side.
-update_interval: 2.0
+# 1.0s tick interval, matching the buy side. cancel_debounce_seconds (2.0)
+# still exceeds this so the walker dedupes ghost cancels safely.
+update_interval: 1.0
 
 # Anti-spoof gate calibrated for WAVES's ~2.4% natural spread (see the buy
 # config for the rationale). Same threshold on both sides keeps behavior
@@ -28,6 +29,9 @@ min_spread_pct: 0.014
 
 # Same 2.0s cancel-debounce as XNO.
 cancel_debounce_seconds: 2.0
+
+# N-shot fill latch: 10 distinct sell fills per process before this side latches.
+max_fills: 10
 
 manual_kill_switch: false
 initial_positions: []

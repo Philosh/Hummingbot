@@ -1,0 +1,27 @@
+id: bbo_peg_a8_htx
+controller_name: bbo_peg_buy
+controller_type: market_making
+
+connector_name: htx
+trading_pair: A8-USDT
+
+# Single LIMIT_MAKER buy at external_best_bid + 1 tick. $11 per side to
+# spread capital across WAVES + SUNDOG + ACTSOL + A8 + PING.
+total_amount_quote: 11
+
+# 1.0s tick interval; cancel_debounce_seconds (2.0) still exceeds it.
+update_interval: 1.0
+
+# Anti-spoof gate, calibrated for A8's ~4.8% live natural spread.
+# Rule of thumb: gate ~60% of typical natural spread.
+# NOTE: A8 is a less-known token — verify the project on HTX's listing
+# page before scaling capital. The wide spread + ~$2M volume is the kind
+# of profile spreads can compress quickly on; watch the gate logs.
+min_spread_pct: 0.028
+
+cancel_debounce_seconds: 2.0
+max_fills: 10
+max_buy_lead: 3
+
+manual_kill_switch: false
+initial_positions: []

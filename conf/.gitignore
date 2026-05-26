@@ -17,5 +17,13 @@
 !controllers/conf_bbo_peg_blue_sell.yml
 !controllers/conf_bbo_peg_sundog.yml
 !controllers/conf_bbo_peg_sundog_sell.yml
+!controllers/conf_bbo_peg_xmn.yml
+!controllers/conf_bbo_peg_xmn_sell.yml
+!controllers/conf_bbo_peg_vsn.yml
+!controllers/conf_bbo_peg_vsn_sell.yml
+!controllers/conf_bbo_peg_a8.yml
+!controllers/conf_bbo_peg_a8_sell.yml
+!controllers/conf_bbo_peg_ping.yml
+!controllers/conf_bbo_peg_ping_sell.yml
 !scripts/conf_v2_with_controllers_mm.yml
 !strategies/conf_pure_mm_xno_1.yml

@@ -1,14 +1,21 @@
 # Launcher config for v2_with_controllers.py.
-# Running WAVES + ACTSOL + SUNDOG on HTX (3 tokens, buy+sell each = 6 controllers).
-# ERA + BLUE paused — both saw live spread compress below their break-even.
-# All three active tokens use total_amount_quote=$11, max_fills=10, max_buy_lead=3
-# (so max inventory accumulation per token ~$33; max across all three ~$99).
-# Capital required: ~$33 USDT for open buy orders + base inventory headroom.
+# Running WAVES + SUNDOG + ACTSOL + A8 + PING on HTX (5 tokens, 10 controllers).
+# Updated after a full-scan screener run surfaced higher-NetExp candidates
+# previously hidden by a top-80 volume cap (bug fixed).
+# - XMN/VSN dropped — their edges collapsed minutes after deployment (XMN
+#   1.79% → 0.19% NetExp). Pausing to avoid trading without edge.
+# - ACTSOL re-enabled — spread recovered to 4.65%, NetExp 3.95%.
+# - A8 + PING added — both >3.7% NetExp on $2M volume.
+#
+# Capital: ~$55 USDT open (5 × $11 buys), max ~$165 inventory across 5 tokens
+# (3 × $11 cap per token × 5 tokens).
 #
 # Per-token gate thresholds (min_spread_pct, calibrated ~60% of natural spread):
-#   WAVES   = 0.014 (live spread ~2%)
-#   ACTSOL  = 0.025 (live spread ~4.2%)
-#   SUNDOG  = 0.017 (live spread ~2.8%; Tron-ecosystem memecoin, watch volatility)
+#   WAVES   = 0.014 (live spread ~1.5-2%)
+#   SUNDOG  = 0.017 (live spread ~1.9-2.8%)
+#   ACTSOL  = 0.025 (live spread ~4.2-4.7%)
+#   A8      = 0.028 (live spread ~4.8%; less-known token, verify)
+#   PING    = 0.026 (live spread ~4.4%; less-known token, verify)
 #
 # Per-token max_fills (process-lifetime fill cap): all currently-enabled = 10
 # Per-token max_buy_lead (inventory cap): all currently-enabled = 3
@@ -16,16 +23,24 @@ script_file_name: v2_with_controllers.py
 controllers_config:
   # - conf_bbo_peg_xno.yml          # disabled
   # - conf_bbo_peg_xno_sell.yml     # disabled
-  # - conf_bbo_peg_era.yml          # disabled (spread compressed below break-even)
-  # - conf_bbo_peg_era_sell.yml     # disabled (spread compressed below break-even)
+  # - conf_bbo_peg_era.yml          # disabled (spread compressed)
+  # - conf_bbo_peg_era_sell.yml     # disabled
   # - conf_bbo_peg_blue.yml         # disabled (spread compressed from 4.3% to 1.8%)
-  # - conf_bbo_peg_blue_sell.yml    # disabled (spread compressed from 4.3% to 1.8%)
+  # - conf_bbo_peg_blue_sell.yml    # disabled
+  # - conf_bbo_peg_xmn.yml          # disabled (edge collapsed: 1.79% → 0.19% NetExp)
+  # - conf_bbo_peg_xmn_sell.yml     # disabled
+  # - conf_bbo_peg_vsn.yml          # disabled (edge dropped out of top-20)
+  # - conf_bbo_peg_vsn_sell.yml     # disabled
   - conf_bbo_peg_waves.yml
   - conf_bbo_peg_waves_sell.yml
-  - conf_bbo_peg_actsol.yml
-  - conf_bbo_peg_actsol_sell.yml
   - conf_bbo_peg_sundog.yml
   - conf_bbo_peg_sundog_sell.yml
+  - conf_bbo_peg_actsol.yml
+  - conf_bbo_peg_actsol_sell.yml
+  - conf_bbo_peg_a8.yml
+  - conf_bbo_peg_a8_sell.yml
+  - conf_bbo_peg_ping.yml
+  - conf_bbo_peg_ping_sell.yml
 
 # Optional safety brakes (USDT). Comment out / set null to disable.
 # max_controller_drawdown_quote stops a single controller if its drawdown from peak exceeds this.

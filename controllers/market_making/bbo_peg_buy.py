@@ -14,7 +14,7 @@ strategy layer.
 from decimal import Decimal
 from typing import Dict, List, Optional, Set, Tuple
 
-from pydantic import Field
+from pydantic import Field, field_validator
 
 from hummingbot.core.data_type.common import MarketDict, PriceType, TradeType
 from hummingbot.strategy_v2.controllers.controller_base import (
@@ -61,8 +61,21 @@ class BBOPegBuyConfig(ControllerConfigBase):
     )
     min_spread_pct: Decimal = Field(
         default=Decimal("0.02"),
-        description="Anti-spoof gate. Refuse to quote when (best_ask - external_best_bid) / external_best_bid < this. Default 0.02 = 2%.",
+        description="Anti-spoof gate. Refuse to quote when (best_ask - external_best_bid) / external_best_bid < this. Default 0.02 = 2%. HARD FLOOR (production): must be > 0.007 (0.7%) — that's the round-trip taker fee (0.4%) plus adverse-selection buffer (0.3%) on HTX retail tier. Below 0.7% the strategy is structurally unprofitable. Adjust upward, never below. Value 0 is allowed as an explicit gate-disabled sentinel for unit tests; production YAMLs must never use it.",
     )
+
+    @field_validator("min_spread_pct")
+    @classmethod
+    def _min_spread_pct_above_floor(cls, v: Decimal) -> Decimal:
+        # Allow 0 (explicit "gate disabled" sentinel used by tests) but reject
+        # any positive value below the production break-even floor of 0.7%.
+        if v != Decimal("0") and v <= Decimal("0.007"):
+            raise ValueError(
+                f"min_spread_pct={v} is below the 0.7% production floor "
+                f"(round-trip fees 0.4% + adverse-selection 0.3%). Set to 0 "
+                f"explicitly only for testing; production configs must use > 0.007."
+            )
+        return v
     cancel_debounce_seconds: float = Field(
         default=2.0,
         description="How long to remember each just-cancelled order's (price, amount) so the walker keeps treating it as ours during the cancel-propagation lag window. Without this, the walker sees our own just-cancelled orders in the exchange book WebSocket and chases them as if they were external bids. Set to 0 to disable.",

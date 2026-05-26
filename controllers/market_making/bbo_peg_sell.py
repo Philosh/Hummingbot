@@ -31,7 +31,7 @@ exclusion before computing the gate.
 from decimal import Decimal
 from typing import Dict, List, Optional, Set, Tuple
 
-from pydantic import Field
+from pydantic import Field, field_validator
 
 from hummingbot.core.data_type.common import MarketDict, PriceType, TradeType
 from hummingbot.strategy_v2.controllers.controller_base import (
@@ -76,8 +76,25 @@ class BBOPegSellConfig(ControllerConfigBase):
     )
     min_spread_pct: Decimal = Field(
         default=Decimal("0.02"),
-        description="Anti-spoof gate. Refuse to quote when (external_best_ask - best_bid) / external_best_ask < this. Default 0.02 = 2%.",
+        description="Anti-spoof gate. Refuse to quote when (external_best_ask - best_bid) / external_best_ask < this. Default 0.02 = 2%. HARD FLOOR (production): must be > 0.004 (0.4%) — that's the one-side taker fee (0.2% on HTX retail) plus adverse-selection buffer (~0.2%). The sell threshold is LOWER than the buy threshold (0.7%) because a sell exits existing inventory and only pays ONE leg of fees, not the full round-trip. Value 0 is allowed as an explicit gate-disabled sentinel for unit tests; production YAMLs must never use it.",
     )
+
+    @field_validator("min_spread_pct")
+    @classmethod
+    def _min_spread_pct_above_floor(cls, v: Decimal) -> Decimal:
+        # Allow 0 (explicit "gate disabled" sentinel used by tests) but reject
+        # any positive value below the sell-side production floor of 0.4%.
+        # Sell floor is LOWER than buy (0.7%) because a sell pays only ONE
+        # leg of fees + adverse selection — it exits existing inventory,
+        # not a full round-trip commitment.
+        if v != Decimal("0") and v <= Decimal("0.004"):
+            raise ValueError(
+                f"min_spread_pct={v} is below the 0.4% sell-side production "
+                f"floor (one-side fee 0.2% + adverse-selection 0.2%). Set to "
+                f"0 explicitly only for testing; production configs must use "
+                f"> 0.004."
+            )
+        return v
     cancel_debounce_seconds: float = Field(
         default=2.0,
         description="How long to remember each just-cancelled order's (price, amount) so the walker keeps treating it as ours during the cancel-propagation lag window. Without this, the walker sees our own just-cancelled orders in the exchange book WebSocket and chases them as if they were external asks. Set to 0 to disable.",

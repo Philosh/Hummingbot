@@ -28,9 +28,9 @@ cancel_debounce_seconds: 2.0
 # N-shot fill latch: 10 distinct fills per process before this side latches.
 max_fills: 10
 
-# Inventory cap: pause buys when (buys - sells) >= 3 on XMN-USDT, so the
-# buy side can't accumulate more than ~$33 of XMN (3 × $11 quote).
-max_buy_lead: 3
+# Inventory cap: pause buys when (buys - sells) >= 1 on XMN-USDT, so the
+# buy side can't accumulate more than ~$11 of XMN (1 × $11 quote).
+max_buy_lead: 1
 
 manual_kill_switch: false
 initial_positions: []

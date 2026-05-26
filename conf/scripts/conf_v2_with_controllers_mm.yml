@@ -6,7 +6,8 @@
 # Audius music streaming) — less likely to vanish in minutes than
 # unfamiliar small-caps.
 #
-# Capital: ~$33 USDT open (3 × $11 buys), max ~$99 inventory.
+# Capital: ~$33 USDT open (3 × $11 buys), max ~$33 inventory
+# (with max_buy_lead=1, each token caps at 1 × $11 unmatched).
 #
 # Per-token gate thresholds (min_spread_pct, calibrated ~60% of natural spread):
 #   PYR    = 0.014 (live spread ~2.3%; clean 0.041% tick)
@@ -14,7 +15,8 @@
 #   SIS    = 0.030 (live spread ~5.2%; chunky 0.51% tick, highest-risk pick)
 #
 # Per-token max_fills (process-lifetime fill cap): all currently-enabled = 10
-# Per-token max_buy_lead (inventory cap): all currently-enabled = 3
+# Per-token max_buy_lead (inventory cap): all currently-enabled = 1
+# (strict 1-for-1 pacing — buy must be matched by a sell before another buy)
 script_file_name: v2_with_controllers.py
 controllers_config:
   # All previously-deployed tokens paused below.

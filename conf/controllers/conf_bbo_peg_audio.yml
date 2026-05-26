@@ -1,0 +1,27 @@
+id: bbo_peg_audio_htx
+controller_name: bbo_peg_buy
+controller_type: market_making
+
+connector_name: htx
+trading_pair: AUDIO-USDT
+
+# Single LIMIT_MAKER buy at external_best_bid + 1 tick. $11 per side.
+total_amount_quote: 11
+
+# 1.0s tick; cancel_debounce_seconds (2.0) still exceeds it.
+update_interval: 1.0
+
+# Anti-spoof gate calibrated for AUDIO's ~3.6% natural spread (60% of spread).
+# AUDIO = Audius decentralized music streaming. Real project with real users.
+# IMPORTANT: chunky 0.52% tick — each peg adjustment moves ~half a percent of
+# price. The 3.6% spread is wide enough to absorb 2 chunky ticks and still
+# leave 2.6% captured, but expect bigger discrete jumps on each cancel-replace
+# cycle than on XNO/WAVES.
+min_spread_pct: 0.022
+
+cancel_debounce_seconds: 2.0
+max_fills: 10
+max_buy_lead: 3
+
+manual_kill_switch: false
+initial_positions: []

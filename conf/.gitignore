@@ -25,5 +25,11 @@
 !controllers/conf_bbo_peg_a8_sell.yml
 !controllers/conf_bbo_peg_ping.yml
 !controllers/conf_bbo_peg_ping_sell.yml
+!controllers/conf_bbo_peg_pyr.yml
+!controllers/conf_bbo_peg_pyr_sell.yml
+!controllers/conf_bbo_peg_audio.yml
+!controllers/conf_bbo_peg_audio_sell.yml
+!controllers/conf_bbo_peg_sis.yml
+!controllers/conf_bbo_peg_sis_sell.yml
 !scripts/conf_v2_with_controllers_mm.yml
 !strategies/conf_pure_mm_xno_1.yml

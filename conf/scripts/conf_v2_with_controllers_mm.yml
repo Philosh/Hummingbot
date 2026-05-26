@@ -1,46 +1,49 @@
 # Launcher config for v2_with_controllers.py.
-# Running WAVES + SUNDOG + ACTSOL + A8 + PING on HTX (5 tokens, 10 controllers).
-# Updated after a full-scan screener run surfaced higher-NetExp candidates
-# previously hidden by a top-80 volume cap (bug fixed).
-# - XMN/VSN dropped — their edges collapsed minutes after deployment (XMN
-#   1.79% → 0.19% NetExp). Pausing to avoid trading without edge.
-# - ACTSOL re-enabled — spread recovered to 4.65%, NetExp 3.95%.
-# - A8 + PING added — both >3.7% NetExp on $2M volume.
+# Running PYR + AUDIO + SIS on HTX (3 tokens, 6 controllers). Clean reset
+# after multiple cycles of "screener-picks-then-collapse" (XMN/MIRA/A8).
+# These three are picked from a user-curated list, all are HTX-status OK,
+# and PYR + AUDIO have real-product fundamentals (Vulcan Forged gaming,
+# Audius music streaming) — less likely to vanish in minutes than
+# unfamiliar small-caps.
 #
-# Capital: ~$55 USDT open (5 × $11 buys), max ~$165 inventory across 5 tokens
-# (3 × $11 cap per token × 5 tokens).
+# Capital: ~$33 USDT open (3 × $11 buys), max ~$99 inventory.
 #
 # Per-token gate thresholds (min_spread_pct, calibrated ~60% of natural spread):
-#   WAVES   = 0.014 (live spread ~1.5-2%)
-#   SUNDOG  = 0.017 (live spread ~1.9-2.8%)
-#   ACTSOL  = 0.025 (live spread ~4.2-4.7%)
-#   A8      = 0.028 (live spread ~4.8%; less-known token, verify)
-#   PING    = 0.026 (live spread ~4.4%; less-known token, verify)
+#   PYR    = 0.014 (live spread ~2.3%; clean 0.041% tick)
+#   AUDIO  = 0.022 (live spread ~3.6%; chunky 0.52% tick)
+#   SIS    = 0.030 (live spread ~5.2%; chunky 0.51% tick, highest-risk pick)
 #
 # Per-token max_fills (process-lifetime fill cap): all currently-enabled = 10
 # Per-token max_buy_lead (inventory cap): all currently-enabled = 3
 script_file_name: v2_with_controllers.py
 controllers_config:
-  # - conf_bbo_peg_xno.yml          # disabled
-  # - conf_bbo_peg_xno_sell.yml     # disabled
-  # - conf_bbo_peg_era.yml          # disabled (spread compressed)
-  # - conf_bbo_peg_era_sell.yml     # disabled
-  # - conf_bbo_peg_blue.yml         # disabled (spread compressed from 4.3% to 1.8%)
-  # - conf_bbo_peg_blue_sell.yml    # disabled
-  # - conf_bbo_peg_xmn.yml          # disabled (edge collapsed: 1.79% → 0.19% NetExp)
-  # - conf_bbo_peg_xmn_sell.yml     # disabled
-  # - conf_bbo_peg_vsn.yml          # disabled (edge dropped out of top-20)
-  # - conf_bbo_peg_vsn_sell.yml     # disabled
-  - conf_bbo_peg_waves.yml
-  - conf_bbo_peg_waves_sell.yml
-  - conf_bbo_peg_sundog.yml
-  - conf_bbo_peg_sundog_sell.yml
-  - conf_bbo_peg_actsol.yml
-  - conf_bbo_peg_actsol_sell.yml
-  - conf_bbo_peg_a8.yml
-  - conf_bbo_peg_a8_sell.yml
-  - conf_bbo_peg_ping.yml
-  - conf_bbo_peg_ping_sell.yml
+  # All previously-deployed tokens paused below.
+  # - conf_bbo_peg_xno.yml          # paused
+  # - conf_bbo_peg_xno_sell.yml     # paused
+  # - conf_bbo_peg_era.yml          # paused (spread compressed)
+  # - conf_bbo_peg_era_sell.yml     # paused
+  # - conf_bbo_peg_blue.yml         # paused (spread compressed)
+  # - conf_bbo_peg_blue_sell.yml    # paused
+  # - conf_bbo_peg_xmn.yml          # paused (edge collapsed)
+  # - conf_bbo_peg_xmn_sell.yml     # paused
+  # - conf_bbo_peg_vsn.yml          # paused (edge collapsed)
+  # - conf_bbo_peg_vsn_sell.yml     # paused
+  # - conf_bbo_peg_waves.yml        # paused (clean reset)
+  # - conf_bbo_peg_waves_sell.yml   # paused
+  # - conf_bbo_peg_sundog.yml       # paused
+  # - conf_bbo_peg_sundog_sell.yml  # paused
+  # - conf_bbo_peg_actsol.yml       # paused
+  # - conf_bbo_peg_actsol_sell.yml  # paused
+  # - conf_bbo_peg_a8.yml           # paused (gate-blocked since startup, no emits)
+  # - conf_bbo_peg_a8_sell.yml      # paused
+  # - conf_bbo_peg_ping.yml         # paused
+  # - conf_bbo_peg_ping_sell.yml    # paused
+  - conf_bbo_peg_pyr.yml
+  - conf_bbo_peg_pyr_sell.yml
+  - conf_bbo_peg_audio.yml
+  - conf_bbo_peg_audio_sell.yml
+  - conf_bbo_peg_sis.yml
+  - conf_bbo_peg_sis_sell.yml
 
 # Optional safety brakes (USDT). Comment out / set null to disable.
 # max_controller_drawdown_quote stops a single controller if its drawdown from peak exceeds this.

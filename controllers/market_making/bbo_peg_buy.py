@@ -90,6 +90,11 @@ class BBOPegBuyConfig(ControllerConfigBase):
         ge=1,
         description="Cross-controller inventory cap. When set, the buy controller refuses to emit a Create if (buys_filled - sells_filled) >= this value, where both counts are tracked across the buy and sell controllers for the same trading pair via the shared fill_tracker module. Prevents the buy side from accumulating inventory faster than the sell side can clear it when running max_fills > 1. None (default) disables the cap — buys fire freely up to max_fills regardless of sell state.",
     )
+    max_inventory_quote: Optional[Decimal] = Field(
+        default=None,
+        ge=0,
+        description="Inventory value cap, in quote currency (e.g. USDT). When set, the buy controller refuses to emit a Create once the current base inventory — marked at the live mid price — reaches this value, and re-enables buys only after the value falls back below it. Independent of max_buy_lead: max_buy_lead caps the *count* of unmatched fills, this caps the *quote value* of accumulated base. Inventory is read from the connector's total base balance, so any base already in the account (including amounts locked in resting sells) counts toward the cap. None (default) disables it.",
+    )
 
     def update_markets(self, markets: MarketDict) -> MarketDict:
         # Upstream's add_or_update signature mistypes *args as the set type
@@ -124,6 +129,9 @@ class BBOPegBuyController(ControllerBase):
         # capped <-> cleared transitions (matches the anti-spoof and balance
         # log patterns). False = not currently capped.
         self._buy_lead_capped_logged: bool = False
+        # Same rate-limit cache for the inventory-value gate (max_inventory_quote).
+        # False = not currently capped by value.
+        self._inventory_value_capped_logged: bool = False
         # Cache of the last logged external_best_bid value, so we only emit
         # a diagnostic line when the chosen price actually changes.
         self._last_logged_external_best_bid: Optional[Decimal] = None
@@ -502,10 +510,13 @@ class BBOPegBuyController(ControllerBase):
     ) -> Optional[CreateExecutorAction]:
         """Build a LIMIT_MAKER buy at target_price.
         Returns None if quantized amount is zero (book can't support an
-        order) or if the cross-controller inventory cap (max_buy_lead) has
-        been reached.
+        order), if the cross-controller inventory cap (max_buy_lead) has
+        been reached, or if the inventory-value cap (max_inventory_quote)
+        has been reached.
         """
         if not self._is_within_inventory_cap():
+            return None
+        if not self._is_within_inventory_value_cap():
             return None
         amount = self.market_data_provider.quantize_order_amount(
             self.config.connector_name,
@@ -558,4 +569,46 @@ class BBOPegBuyController(ControllerBase):
                 f"< max_buy_lead={cap}."
             )
             self._buy_lead_capped_logged = False
+        return True
+
+    def _is_within_inventory_value_cap(self) -> bool:
+        """Return False (and log on state transition) when the base inventory,
+        marked at the connector mid price, has reached max_inventory_quote.
+        Returns True if the cap is disabled (None) or the value is below it.
+
+        Independent of max_buy_lead: that caps the *count* of unmatched fills,
+        this caps the *quote value* of accumulated base. Inventory is the
+        connector's total base balance (includes base locked in our own
+        resting sells), so the cap reflects the full position. Marked at the
+        connector mid (PriceType.MidPrice) so the value tracks fair price
+        rather than the side we happen to be quoting.
+        """
+        cap = self.config.max_inventory_quote
+        if cap is None:
+            return True
+        base_asset = self.config.trading_pair.split("-")[0]
+        inventory = self.market_data_provider.get_balance(
+            self.config.connector_name, base_asset
+        )
+        mid = self.market_data_provider.get_price_by_type(
+            self.config.connector_name, self.config.trading_pair, PriceType.MidPrice
+        )
+        value = inventory * mid
+        if value >= cap:
+            if not self._inventory_value_capped_logged:
+                self.logger().warning(
+                    f"{self.config.log_prefix} buy paused: inventory value "
+                    f"{value} ({inventory} {base_asset} @ mid {mid}) >= "
+                    f"max_inventory_quote={cap}. Waiting for inventory value "
+                    f"to fall before quoting again."
+                )
+                self._inventory_value_capped_logged = True
+            return False
+        if self._inventory_value_capped_logged:
+            self.logger().info(
+                f"{self.config.log_prefix} buy resumed: inventory value "
+                f"{value} ({inventory} {base_asset} @ mid {mid}) "
+                f"< max_inventory_quote={cap}."
+            )
+            self._inventory_value_capped_logged = False
         return True

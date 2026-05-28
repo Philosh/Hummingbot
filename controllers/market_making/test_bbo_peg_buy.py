@@ -7,7 +7,7 @@ from unittest.mock import AsyncMock, MagicMock, PropertyMock
 
 from hummingbot.connector.exchange_py_base import ExchangePyBase
 from hummingbot.connector.trading_rule import TradingRule  # type: ignore[import-not-found]  # ty: ignore[unresolved-import]
-from hummingbot.core.data_type.common import TradeType
+from hummingbot.core.data_type.common import PriceType, TradeType
 from hummingbot.data_feed.market_data_provider import MarketDataProvider
 from hummingbot.strategy.strategy_v2_base import StrategyV2Base
 from hummingbot.strategy_v2.executors.order_executor.data_types import (
@@ -1470,10 +1470,14 @@ class TestBBOPegBuyComputeOwnVolumeByPrice(unittest.TestCase):
         controller, _ = _make_controller_for_walker(executors=[])
         controller.market_data_provider.time.return_value = 1000.0  # type: ignore[attr-defined]  # ty: ignore[unresolved-attribute]  # pyright: ignore[reportAttributeAccessIssue]
         controller._pending_cancels["p1"] = (
-            Decimal("0.4414"), Decimal("45"), 1002.0,
+            Decimal("0.4414"),
+            Decimal("45"),
+            1002.0,
         )
         controller._pending_cancels["p2"] = (
-            Decimal("0.4414"), Decimal("46"), 1002.0,
+            Decimal("0.4414"),
+            Decimal("46"),
+            1002.0,
         )
         result = controller._compute_own_volume_by_price()
         self.assertEqual(result, {Decimal("0.4414"): Decimal("91")})
@@ -1605,10 +1609,14 @@ class TestBBOPegBuyRecordPendingCancels(unittest.TestCase):
         # bounded over long sessions without needing a separate sweep.
         controller = self._make_controller(now=1000.0)
         controller._pending_cancels["old"] = (
-            Decimal("0.40"), Decimal("10"), 999.0,  # expired
+            Decimal("0.40"),
+            Decimal("10"),
+            999.0,  # expired
         )
         controller._pending_cancels["future"] = (
-            Decimal("0.41"), Decimal("10"), 1001.0,  # still valid
+            Decimal("0.41"),
+            Decimal("10"),
+            1001.0,  # still valid
         )
         e = _fake_executor(price=Decimal("0.42"), amount=Decimal("10"))
         e.id = "new"
@@ -2622,11 +2630,15 @@ class TestBBOPegBuyUpdateFillLatch(unittest.TestCase):
         # With max_fills=2, a single filled executor should not gate the
         # controller — we still want a second create/fill cycle.
         controller = self._make_controller_with_max_fills(max_fills=2)
-        setattr(controller, "executors_info", [
-            self._fake_executor_with_fill_and_id(
-                eid="exec-1", executed_amount_base=Decimal("5")
-            ),
-        ])
+        setattr(
+            controller,
+            "executors_info",
+            [
+                self._fake_executor_with_fill_and_id(
+                    eid="exec-1", executed_amount_base=Decimal("5")
+                ),
+            ],
+        )
         controller._update_fill_latch()
         self.assertEqual(controller._fill_count, 1)
         self.assertFalse(controller._has_filled)
@@ -2634,14 +2646,18 @@ class TestBBOPegBuyUpdateFillLatch(unittest.TestCase):
     def test_max_fills_two_trips_on_second_distinct_fill(self):
         # Two distinct executors with fills → count=2, latch trips.
         controller = self._make_controller_with_max_fills(max_fills=2)
-        setattr(controller, "executors_info", [
-            self._fake_executor_with_fill_and_id(
-                eid="exec-1", executed_amount_base=Decimal("5")
-            ),
-            self._fake_executor_with_fill_and_id(
-                eid="exec-2", executed_amount_base=Decimal("3")
-            ),
-        ])
+        setattr(
+            controller,
+            "executors_info",
+            [
+                self._fake_executor_with_fill_and_id(
+                    eid="exec-1", executed_amount_base=Decimal("5")
+                ),
+                self._fake_executor_with_fill_and_id(
+                    eid="exec-2", executed_amount_base=Decimal("3")
+                ),
+            ],
+        )
         controller._update_fill_latch()
         self.assertEqual(controller._fill_count, 2)
         self.assertTrue(controller._has_filled)
@@ -2941,9 +2957,7 @@ class TestBBOPegBuyDetermineExecutorActions(unittest.TestCase):
             max_fills=5,
         )
         controller._fill_count = 5
-        controller._counted_fill_executor_ids.update(
-            f"prior-{i}" for i in range(5)
-        )
+        controller._counted_fill_executor_ids.update(f"prior-{i}" for i in range(5))
         actions = controller.determine_executor_actions()
         stops = [a for a in actions if isinstance(a, StopExecutorAction)]
         creates = [a for a in actions if isinstance(a, CreateExecutorAction)]
@@ -3068,10 +3082,10 @@ class TestBBOPegBuyInventoryCap(unittest.TestCase):
             max_buy_lead=max_buy_lead,
         )
         market_data_provider = MagicMock(spec=MarketDataProvider)
-        market_data_provider.quantize_order_amount.side_effect = (
-            lambda _c, _p, amount: amount
+        market_data_provider.quantize_order_amount.side_effect = lambda _c, _p, amount: (
+            amount
         )
-        market_data_provider.time.return_value = 1700000000.0  # type: ignore[attr-defined]  # ty: ignore[unresolved-attribute]  # pyright: ignore[reportAttributeAccessIssue]
+        market_data_provider.time.return_value = 1700000000.0
         controller = BBOPegBuyController(
             config=config,
             market_data_provider=market_data_provider,
@@ -3235,6 +3249,182 @@ class TestBBOPegBuyInventoryCap(unittest.TestCase):
         self.assertEqual(fill_tracker.buys_filled("ERA-USDT"), 1)
 
 
+class TestBBOPegBuyInventoryValueCap(unittest.TestCase):
+    """Tests for the max_inventory_quote inventory-value cap.
+
+    Pins:
+      - cap disabled (max_inventory_quote=None) → buys fire freely
+      - cap engaged (inventory * mid >= cap) → _build_create_action returns None
+      - cap clears when inventory value drops below cap → buys resume
+      - value is marked at mid = (external_best_bid + best_ask) / 2
+      - inventory read from the TOTAL base balance (get_balance), not available
+      - state-transition log fires once on engage, once on clear
+
+    With the default mid here (0.1446) a balance of 140 marks to 20.244
+    (over a 20 cap) and 130 marks to 18.798 (under it).
+    """
+
+    def _make_controller(
+        self,
+        *,
+        max_inventory_quote: Optional[Decimal] = None,
+        base_balance: Decimal = Decimal("0"),
+        mid: Decimal = Decimal("0.1446"),
+        trading_pair: str = "ERA-USDT",
+    ) -> BBOPegBuyController:
+        config = BBOPegBuyConfig(
+            id="test",
+            controller_name="bbo_peg_buy",
+            connector_name="htx",
+            trading_pair=trading_pair,
+            total_amount_quote=Decimal("20"),
+            update_interval=0.5,
+            max_inventory_quote=max_inventory_quote,
+        )
+        market_data_provider = MagicMock(spec=MarketDataProvider)
+        market_data_provider.quantize_order_amount.side_effect = lambda _c, _p, amount: (
+            amount
+        )
+        market_data_provider.get_balance.return_value = base_balance
+        market_data_provider.get_price_by_type.return_value = mid
+        market_data_provider.time.return_value = 1700000000.0
+        controller = BBOPegBuyController(
+            config=config,
+            market_data_provider=market_data_provider,
+            actions_queue=AsyncMock(spec=asyncio.Queue),
+        )
+        return controller
+
+    # --- Cap disabled ---
+
+    def test_cap_disabled_default_emits_create_regardless_of_inventory(self):
+        # max_inventory_quote=None (default) → no cap. Even a huge balance
+        # still emits a Create, and the balance is never even read.
+        controller = self._make_controller(
+            max_inventory_quote=None, base_balance=Decimal("100000")
+        )
+        result = controller._build_create_action(target_price=Decimal("0.1446"))
+        self.assertIsInstance(result, CreateExecutorAction)
+        mdp = cast(MagicMock, controller.market_data_provider)
+        mdp.get_balance.assert_not_called()
+
+    # --- Cap engaged ---
+
+    def test_cap_engaged_when_value_reaches_threshold(self):
+        # 140 * 0.1446 = 20.244 >= 20 → no Create.
+        controller = self._make_controller(
+            max_inventory_quote=Decimal("20"), base_balance=Decimal("140")
+        )
+        result = controller._build_create_action(target_price=Decimal("0.1446"))
+        self.assertIsNone(result)
+
+    def test_cap_not_engaged_below_threshold(self):
+        # 130 * 0.1446 = 18.798 < 20 → Create.
+        controller = self._make_controller(
+            max_inventory_quote=Decimal("20"), base_balance=Decimal("130")
+        )
+        result = controller._build_create_action(target_price=Decimal("0.1446"))
+        self.assertIsInstance(result, CreateExecutorAction)
+
+    def test_cap_engages_at_exactly_threshold(self):
+        # Pins the ">=" comparison: value == cap blocks. mid 0.20, balance
+        # 100 → 100 * 0.20 = 20.0 == cap.
+        controller = self._make_controller(
+            max_inventory_quote=Decimal("20"),
+            base_balance=Decimal("100"),
+            mid=Decimal("0.20"),
+        )
+        result = controller._build_create_action(target_price=Decimal("0.1446"))
+        self.assertIsNone(result)
+
+    # --- Cap clears ---
+
+    def test_cap_clears_when_inventory_value_drops(self):
+        # Headline behavior: over cap → blocked; inventory value drops below
+        # cap (e.g. a sell reduced the balance) → next call emits a Create.
+        controller = self._make_controller(
+            max_inventory_quote=Decimal("20"), base_balance=Decimal("140")
+        )
+        mdp = cast(MagicMock, controller.market_data_provider)
+        self.assertIsNone(
+            controller._build_create_action(target_price=Decimal("0.1446"))
+        )
+        mdp.get_balance.return_value = Decimal("130")
+        result = controller._build_create_action(target_price=Decimal("0.1446"))
+        self.assertIsInstance(result, CreateExecutorAction)
+
+    # --- Valuation inputs ---
+
+    def test_value_uses_total_balance_not_available(self):
+        # The cap must reflect the full position, including base locked in
+        # resting sells — so it reads get_balance (total), never
+        # get_available_balance.
+        controller = self._make_controller(
+            max_inventory_quote=Decimal("20"), base_balance=Decimal("130")
+        )
+        controller._build_create_action(target_price=Decimal("0.1446"))
+        mdp = cast(MagicMock, controller.market_data_provider)
+        mdp.get_balance.assert_called_once_with("htx", "ERA")
+        mdp.get_available_balance.assert_not_called()
+
+    def test_value_marked_at_mid_price(self):
+        # The valuation source is the connector mid (PriceType.MidPrice), not
+        # the bid, ask, or the buy target_price.
+        controller = self._make_controller(
+            max_inventory_quote=Decimal("20"), base_balance=Decimal("130")
+        )
+        controller._build_create_action(target_price=Decimal("0.1446"))
+        mdp = cast(MagicMock, controller.market_data_provider)
+        args = mdp.get_price_by_type.call_args[0]
+        self.assertEqual(args[0], "htx")
+        self.assertEqual(args[1], "ERA-USDT")
+        self.assertEqual(args[2], PriceType.MidPrice)
+
+    # --- Logging (state-transition rate limit) ---
+
+    def test_cap_engage_log_fires_once_per_episode(self):
+        controller = self._make_controller(
+            max_inventory_quote=Decimal("20"), base_balance=Decimal("140")
+        )
+        log_mock = MagicMock()
+        setattr(controller, "logger", MagicMock(return_value=log_mock))
+        controller._build_create_action(target_price=Decimal("0.1446"))
+        controller._build_create_action(target_price=Decimal("0.1446"))
+        controller._build_create_action(target_price=Decimal("0.1446"))
+        self.assertEqual(log_mock.warning.call_count, 1)
+        warning_msg = log_mock.warning.call_args[0][0]
+        self.assertIn("buy paused", warning_msg)
+        self.assertIn("inventory value", warning_msg)
+
+    def test_cap_clear_emits_info_log_and_rearms_warning(self):
+        # Engage → clear → engage again: 1 warning, 1 info, 1 warning.
+        controller = self._make_controller(
+            max_inventory_quote=Decimal("20"), base_balance=Decimal("140")
+        )
+        mdp = cast(MagicMock, controller.market_data_provider)
+        log_mock = MagicMock()
+        setattr(controller, "logger", MagicMock(return_value=log_mock))
+        controller._build_create_action(target_price=Decimal("0.1446"))  # warn
+        mdp.get_balance.return_value = Decimal("130")
+        controller._build_create_action(target_price=Decimal("0.1446"))  # info
+        mdp.get_balance.return_value = Decimal("140")
+        controller._build_create_action(target_price=Decimal("0.1446"))  # warn 2
+        self.assertEqual(log_mock.warning.call_count, 2)
+        self.assertEqual(log_mock.info.call_count, 1)
+        info_msg = log_mock.info.call_args[0][0]
+        self.assertIn("buy resumed", info_msg)
+
+    def test_no_log_on_cold_start_below_cap(self):
+        controller = self._make_controller(
+            max_inventory_quote=Decimal("20"), base_balance=Decimal("130")
+        )
+        log_mock = MagicMock()
+        setattr(controller, "logger", MagicMock(return_value=log_mock))
+        controller._build_create_action(target_price=Decimal("0.1446"))
+        log_mock.warning.assert_not_called()
+        log_mock.info.assert_not_called()
+
+
 class TestBBOPegBuyDowngradeTrapScenario(IsolatedAsyncioWrapperTestCase):
     """End-to-end integration test for the 'stuck at 0.4295' downgrade trap.
 
@@ -3277,9 +3467,7 @@ class TestBBOPegBuyDowngradeTrapScenario(IsolatedAsyncioWrapperTestCase):
     async def test_stuck_state_controller_emits_create_no_clamp_preserves_intent(self):
         # Our 46 XNO is already at 0.4295 (placed in some prior tick that
         # the stock-OrderExecutor downgrade trap forced down to this level).
-        active_executor = _fake_executor(
-            price=Decimal("0.4295"), amount=Decimal("46")
-        )
+        active_executor = _fake_executor(price=Decimal("0.4295"), amount=Decimal("46"))
         active_executor.id = "downgraded-order"
 
         # Book exactly as in production log 21:47:55:
@@ -3311,11 +3499,11 @@ class TestBBOPegBuyDowngradeTrapScenario(IsolatedAsyncioWrapperTestCase):
         market_data_provider.get_trading_rules.return_value = rules
         market_data_provider.get_price_by_type.return_value = Decimal("0.4541")
         market_data_provider.get_order_book.return_value = _fake_order_book(stuck_bids)
-        market_data_provider.quantize_order_price.side_effect = (
-            lambda _c, _p, price: price
+        market_data_provider.quantize_order_price.side_effect = lambda _c, _p, price: (
+            price
         )
-        market_data_provider.quantize_order_amount.side_effect = (
-            lambda _c, _p, amount: amount
+        market_data_provider.quantize_order_amount.side_effect = lambda _c, _p, amount: (
+            amount
         )
         market_data_provider.time.return_value = 1700000000.0
 
@@ -3334,9 +3522,7 @@ class TestBBOPegBuyDowngradeTrapScenario(IsolatedAsyncioWrapperTestCase):
         # ASSERTION 1 — controller computed the right target.
         # External best is 0.4295 (the 92-XNO non-ours), so target = 0.4296.
         # Fails if walker logic regresses (e.g., stops excluding own volume).
-        self.assertEqual(
-            controller.processed_data["target_price"], Decimal("0.4296")
-        )
+        self.assertEqual(controller.processed_data["target_price"], Decimal("0.4296"))
 
         # ASSERTION 2 — controller flagged our 0.4295 order as stale and
         # emitted a Stop for it. Fails if categorize logic regresses
@@ -3435,14 +3621,12 @@ class TestBBOPegBuyCancelLagScenario(IsolatedAsyncioWrapperTestCase):
         rules.min_price_increment = Decimal("0.0001")
         market_data_provider.get_trading_rules.return_value = rules
         market_data_provider.get_price_by_type.return_value = Decimal("0.4541")
-        market_data_provider.get_order_book.return_value = _fake_order_book(
-            lagged_bids
+        market_data_provider.get_order_book.return_value = _fake_order_book(lagged_bids)
+        market_data_provider.quantize_order_price.side_effect = lambda _c, _p, price: (
+            price
         )
-        market_data_provider.quantize_order_price.side_effect = (
-            lambda _c, _p, price: price
-        )
-        market_data_provider.quantize_order_amount.side_effect = (
-            lambda _c, _p, amount: amount
+        market_data_provider.quantize_order_amount.side_effect = lambda _c, _p, amount: (
+            amount
         )
         market_data_provider.time.return_value = 1000.0
 
@@ -3473,9 +3657,7 @@ class TestBBOPegBuyCancelLagScenario(IsolatedAsyncioWrapperTestCase):
 
         # ASSERTION 2 — target stays at 0.4365, not jumping up to 0.4415.
         # This is the self-chase prevention in action.
-        self.assertEqual(
-            controller.processed_data["target_price"], Decimal("0.4365")
-        )
+        self.assertEqual(controller.processed_data["target_price"], Decimal("0.4365"))
 
         # ASSERTION 3 — controller emits NO actions this tick: the active
         # executor is already at the correct price 0.4365 (in_tolerance).

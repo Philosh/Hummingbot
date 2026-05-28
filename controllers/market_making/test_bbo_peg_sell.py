@@ -1989,9 +1989,10 @@ class TestBBOPegSellLogActionsEmitted(unittest.TestCase):
 class TestBBOPegSellBuildCreateAction(unittest.TestCase):
     """Direct unit tests for _build_create_action in isolation.
 
-    Verifies the LIMIT_MAKER buy action contract: correct order shape,
-    safety invariants (BUY side, LIMIT_MAKER strategy), amount quantization,
-    and the zero/negative-amount short-circuit.
+    Verifies the LIMIT_MAKER sell action contract: correct order shape,
+    safety invariants (SELL side, LIMIT_MAKER strategy), amount sizing
+    (capped at the held balance), and the not-sellable short-circuit (zero
+    amount or a notional below the exchange minimum).
     """
 
     def _make_controller(
@@ -1999,10 +2000,11 @@ class TestBBOPegSellBuildCreateAction(unittest.TestCase):
         *,
         quantize_amount_side_effect=None,
         timestamp: float = 1700000000.0,
+        min_notional: Decimal = Decimal("10"),
     ) -> BBOPegSellController:
-        """Builds a controller with quantize_order_amount and time() mocked.
-        Stashes the mocked MDP on self.market_data_provider_mock so tests
-        can assert on call args directly.
+        """Builds a controller with quantize_order_amount, time(), and the
+        exchange min_notional_size mocked. Stashes the mocked MDP on
+        self.market_data_provider_mock so tests can assert on call args.
         """
         config = BBOPegSellConfig(
             id="test-controller-id",
@@ -2020,7 +2022,10 @@ class TestBBOPegSellBuildCreateAction(unittest.TestCase):
         # Default to ample base balance so tests not specifically about the
         # pre-flight balance check don't have to mock it. Balance-specific
         # tests override this on the returned controller's MDP.
-        market_data_provider.get_available_balance.return_value = Decimal("1000000")  # type: ignore[attr-defined]  # ty: ignore[unresolved-attribute]  # pyright: ignore[reportAttributeAccessIssue]
+        market_data_provider.get_available_balance.return_value = Decimal("1000000")
+        rules = MagicMock()
+        rules.min_notional_size = min_notional
+        market_data_provider.get_trading_rules.return_value = rules
         self.market_data_provider_mock = market_data_provider
         return BBOPegSellController(
             config=config,
@@ -2066,8 +2071,8 @@ class TestBBOPegSellBuildCreateAction(unittest.TestCase):
 
     # --- Safety invariants (critical) ---
 
-    def test_action_uses_buy_side(self):
-        # CRITICAL: this is a buy-only controller. Must NEVER be SELL.
+    def test_action_uses_sell_side(self):
+        # CRITICAL: this is a sell-only controller. Must NEVER be BUY.
         controller = self._make_controller()
         result = controller._build_create_action(target_price=Decimal("0.4381"))
         assert result is not None
@@ -2131,33 +2136,43 @@ class TestBBOPegSellBuildCreateAction(unittest.TestCase):
 
     # --- Pre-flight balance check ---
 
-    def test_returns_none_when_base_balance_insufficient(self):
-        # Production scenario: the account has no XNO (or less than the
-        # quantized amount). The framework's OrderExecutor would otherwise
-        # log "Not enough budget to open position" on every tick. The
-        # controller-level guard prevents that by skipping the Create
-        # entirely.
+    def test_returns_none_when_holding_below_min_notional(self):
+        # Holding too little to clear the exchange minimum ($10 mocked). We
+        # hold 10 XNO; at 0.4381 that's only ~$4.38 of notional, which HTX
+        # rejects — so we skip the Create and park the dust rather than
+        # spamming failed placements.
         controller = self._make_controller()
         log_mock = MagicMock()
         setattr(controller, "logger", MagicMock(return_value=log_mock))
-        # target=0.4381, quote=20 -> required ≈ 45.65 XNO. Account has 10.
         controller.market_data_provider.get_available_balance.return_value = Decimal(  # type: ignore[attr-defined]  # ty: ignore[unresolved-attribute]  # pyright: ignore[reportAttributeAccessIssue]
             "10"
         )
         result = controller._build_create_action(target_price=Decimal("0.4381"))
         self.assertIsNone(result)
 
-    def test_returns_create_action_when_base_balance_exactly_sufficient(self):
-        # Boundary: balance == required must NOT block (strict `<`, not `<=`).
-        # If a refactor changes the comparator we silently lose every order
-        # at the wire-edge.
-        controller = self._make_controller(
-            quantize_amount_side_effect=lambda _c, _p, _amount: Decimal("46"),
-        )
+    def test_caps_sell_at_held_balance_when_below_desired(self):
+        # The headline fix: when we hold LESS than the configured notional
+        # would buy (price moved against us since the buy), sell what we
+        # actually hold instead of demanding the full size and stalling.
+        # quote=20 -> desired ≈ 45.65 XNO, but we hold only 30 (~$13.14,
+        # above the $10 minimum). The order must be sized at 30, not 45.65.
+        controller = self._make_controller()
         controller.market_data_provider.get_available_balance.return_value = Decimal(  # type: ignore[attr-defined]  # ty: ignore[unresolved-attribute]  # pyright: ignore[reportAttributeAccessIssue]
-            "46"
+            "30"
         )
         result = controller._build_create_action(target_price=Decimal("0.4381"))
+        assert result is not None
+        config = result.executor_config
+        assert isinstance(config, OrderExecutorConfig)
+        self.assertEqual(config.amount, Decimal("30"))
+
+    def test_holding_at_exactly_min_notional_is_sellable(self):
+        # Boundary: notional == min_notional must NOT block (strict `<`, not
+        # `<=`). 20 XNO * 0.5 = $10.0 == the mocked $10 minimum → sellable.
+        controller = self._make_controller(
+            quantize_amount_side_effect=lambda _c, _p, _amount: Decimal("20"),
+        )
+        result = controller._build_create_action(target_price=Decimal("0.5"))
         self.assertIsInstance(result, CreateExecutorAction)
 
     def test_balance_check_reads_base_asset_from_trading_pair(self):
@@ -2170,10 +2185,10 @@ class TestBBOPegSellBuildCreateAction(unittest.TestCase):
             "htx", "XNO"
         )
 
-    def test_insufficient_balance_log_fires_once_per_episode(self):
+    def test_not_sellable_log_fires_once_per_episode(self):
         # Rate-limiting: an empty account on every tick must NOT spam the
-        # log. First insufficient → 1 warning. Second insufficient → no new
-        # log. Recovery resets the latch (covered separately).
+        # log. First not-sellable → 1 warning. Subsequent → no new log.
+        # Recovery resets the latch (covered separately).
         controller = self._make_controller()
         log_mock = MagicMock()
         setattr(controller, "logger", MagicMock(return_value=log_mock))
@@ -2185,13 +2200,13 @@ class TestBBOPegSellBuildCreateAction(unittest.TestCase):
         controller._build_create_action(target_price=Decimal("0.4381"))
         self.assertEqual(log_mock.warning.call_count, 1)
         warning_msg = log_mock.warning.call_args[0][0]
-        self.assertIn("insufficient", warning_msg.lower())
+        self.assertIn("sellable", warning_msg.lower())
         self.assertIn("XNO", warning_msg)
 
     def test_recovery_emits_info_log_and_resets_latch(self):
-        # Transition: insufficient → sufficient must log a single recovery
-        # info line and re-arm the warning so a subsequent insufficient
-        # episode logs again. Mirrors the gate state-transition pattern.
+        # Transition: not-sellable → sellable must log a single recovery info
+        # line and re-arm the warning so a subsequent not-sellable episode
+        # logs again. Mirrors the gate state-transition pattern.
         controller = self._make_controller()
         log_mock = MagicMock()
         setattr(controller, "logger", MagicMock(return_value=log_mock))
@@ -2200,17 +2215,17 @@ class TestBBOPegSellBuildCreateAction(unittest.TestCase):
         )
         controller._build_create_action(
             target_price=Decimal("0.4381")
-        )  # blocked → warn
+        )  # not sellable → warn
         controller.market_data_provider.get_available_balance.return_value = Decimal(  # type: ignore[attr-defined]  # ty: ignore[unresolved-attribute]  # pyright: ignore[reportAttributeAccessIssue]
             "100"
         )
         controller._build_create_action(
             target_price=Decimal("0.4381")
-        )  # recovered → info
+        )  # sellable again → info
         self.assertEqual(log_mock.warning.call_count, 1)
         self.assertEqual(log_mock.info.call_count, 1)
         info_msg = log_mock.info.call_args[0][0]
-        self.assertIn("recovered", info_msg.lower())
+        self.assertIn("sellable again", info_msg.lower())
         # Re-arm check: drop balance again → another warning fires.
         controller.market_data_provider.get_available_balance.return_value = Decimal(  # type: ignore[attr-defined]  # ty: ignore[unresolved-attribute]  # pyright: ignore[reportAttributeAccessIssue]
             "0"
@@ -2219,9 +2234,9 @@ class TestBBOPegSellBuildCreateAction(unittest.TestCase):
         self.assertEqual(log_mock.warning.call_count, 2)
 
     def test_no_log_on_cold_start_with_sufficient_balance(self):
-        # Cold start has _balance_insufficient_logged=False. A sufficient
-        # balance on the very first call must NOT emit any "recovered" info
-        # log — that would only make sense after a prior insufficient state.
+        # Cold start has _not_sellable_logged=False. A sellable holding on
+        # the very first call must NOT emit any recovery info log — that
+        # would only make sense after a prior not-sellable state.
         controller = self._make_controller()
         log_mock = MagicMock()
         setattr(controller, "logger", MagicMock(return_value=log_mock))
@@ -2242,66 +2257,75 @@ class TestBBOPegSellBuildCreateAction(unittest.TestCase):
         # get_available_balance subtracts that, returning ~5. On the next tick
         # the external best ask moves to 0.4381, so the controller emits a
         # Stop for the 0.4400 order and tries to create a new one at 0.4381.
-        # Without the credit, the create would be blocked (have=5, need=45)
-        # even though the Stop releases 45 of inventory in this same tick.
+        # Without the credit the new order would be sized to just ~5 XNO
+        # (~$2.19, below the $10 minimum) and skipped; crediting the 45 about
+        # to release lets it sell the full ~45.65.
         controller = self._make_controller()
         controller.market_data_provider.get_available_balance.return_value = Decimal(  # type: ignore[attr-defined]  # ty: ignore[unresolved-attribute]  # pyright: ignore[reportAttributeAccessIssue]
             "5"
         )
-        # quote=20, target=0.4381 → required = 20 / 0.4381 ≈ 45.65 XNO.
-        # Inventory being released by the same-tick Stop: 45.
-        # Effective = 5 + 45 = 50, which covers the 45.65 needed.
-        stale = [_fake_executor(price=Decimal("0.4400"), amount=Decimal("45"))]
+        stale = cast(
+            List[ExecutorInfo],
+            [_fake_executor(price=Decimal("0.4400"), amount=Decimal("45"))],
+        )
         result = controller._build_create_action(
             target_price=Decimal("0.4381"), stops_this_tick=stale
         )
         self.assertIsInstance(result, CreateExecutorAction)
 
-    def test_stops_this_tick_credit_does_not_allow_oversell(self):
-        # Safety: if available + about-to-release is still below required,
-        # the Create must still be blocked. Prevents the credit from masking
-        # a genuine insufficient-inventory situation.
+    def test_caps_sell_amount_at_available_including_credit(self):
+        # The credit raises the cap, but the order is still sized at what we
+        # actually hold, never the full desired. raw=5 + stop release 20 = 25
+        # available; desired ≈ 45.65. The order must be sized at 25 (≥ $10
+        # notional, so it places), proving we sell holdings — capped — not
+        # the configured size.
         controller = self._make_controller()
         controller.market_data_provider.get_available_balance.return_value = Decimal(  # type: ignore[attr-defined]  # ty: ignore[unresolved-attribute]  # pyright: ignore[reportAttributeAccessIssue]
             "5"
         )
-        # required ≈ 45.65; available=5 + stop_amount=10 = 15. Still short.
-        stale = [_fake_executor(price=Decimal("0.4400"), amount=Decimal("10"))]
+        stale = cast(
+            List[ExecutorInfo],
+            [_fake_executor(price=Decimal("0.4400"), amount=Decimal("20"))],
+        )
         result = controller._build_create_action(
             target_price=Decimal("0.4381"), stops_this_tick=stale
         )
-        self.assertIsNone(result)
+        assert result is not None
+        config = result.executor_config
+        assert isinstance(config, OrderExecutorConfig)
+        self.assertEqual(config.amount, Decimal("25"))
 
     def test_stops_this_tick_credit_sums_multiple_stops(self):
         # Walker may need to cancel >1 of our own orders in a single tick
         # (e.g., we have two at different stale prices after a partial fill +
         # re-quote). The credit must include the full sum of amounts being
-        # released, not just the first one.
+        # released, not just the first one. Two stops 20 + 25 lift available
+        # from 5 to 50, enough to sell the full desired ~45.65.
         controller = self._make_controller()
         controller.market_data_provider.get_available_balance.return_value = Decimal(  # type: ignore[attr-defined]  # ty: ignore[unresolved-attribute]  # pyright: ignore[reportAttributeAccessIssue]
             "5"
         )
-        # required ≈ 45.65. Two stops of 20 + 25 = 45. Effective = 50.
-        stale = [
-            _fake_executor(price=Decimal("0.4400"), amount=Decimal("20")),
-            _fake_executor(price=Decimal("0.4405"), amount=Decimal("25")),
-        ]
+        stale = cast(
+            List[ExecutorInfo],
+            [
+                _fake_executor(price=Decimal("0.4400"), amount=Decimal("20")),
+                _fake_executor(price=Decimal("0.4405"), amount=Decimal("25")),
+            ],
+        )
         result = controller._build_create_action(
             target_price=Decimal("0.4381"), stops_this_tick=stale
         )
         self.assertIsInstance(result, CreateExecutorAction)
 
-    def test_stops_this_tick_default_empty_preserves_old_behavior(self):
-        # Backward-compatibility pin: callers that don't pass stops_this_tick
-        # (the kwarg defaults to None) get exactly the pre-fix behavior —
-        # raw available_balance comparison with no credit. This guards
-        # against accidentally swallowing real insufficient-balance states
-        # if a future refactor stops threading stops through.
+    def test_no_credit_applied_without_stops_this_tick(self):
+        # Without stops_this_tick (defaults to None), the cap is just the raw
+        # available balance — no credit. 5 XNO at 0.4381 ≈ $2.19, below the
+        # $10 minimum → not sellable → None. Guards against a refactor that
+        # silently credits inventory that isn't actually releasing.
         controller = self._make_controller()
         controller.market_data_provider.get_available_balance.return_value = Decimal(  # type: ignore[attr-defined]  # ty: ignore[unresolved-attribute]  # pyright: ignore[reportAttributeAccessIssue]
             "5"
         )
-        # No stops_this_tick passed → required 45.65 vs available 5 → blocked.
         result = controller._build_create_action(target_price=Decimal("0.4381"))
         self.assertIsNone(result)
 
@@ -2321,27 +2345,31 @@ class TestBBOPegSellBuildCreateAction(unittest.TestCase):
             use_order_executor_config=False,
         )
         result = controller._build_create_action(
-            target_price=Decimal("0.4381"), stops_this_tick=[not_an_order]
+            target_price=Decimal("0.4381"),
+            stops_this_tick=cast(List[ExecutorInfo], [not_an_order]),
         )
         self.assertIsNone(result)
 
-    def test_insufficient_log_includes_credit_breakdown(self):
-        # When the credit-augmented balance is still insufficient, the
-        # warning log must show the breakdown (raw available + credit =
-        # effective) so a reader can tell at a glance whether the issue is
-        # "no inventory at all" vs "stops too small to cover the new size".
+    def test_not_sellable_log_mentions_holding_and_minimum(self):
+        # The warning must name the base asset and the exchange minimum so a
+        # reader can tell at a glance why no sell is going up. raw=5 + stop 10
+        # = 15 XNO ≈ $6.57, below the $10 minimum.
         controller = self._make_controller()
         log_mock = MagicMock()
         setattr(controller, "logger", MagicMock(return_value=log_mock))
         controller.market_data_provider.get_available_balance.return_value = Decimal(  # type: ignore[attr-defined]  # ty: ignore[unresolved-attribute]  # pyright: ignore[reportAttributeAccessIssue]
             "5"
         )
-        stale = [_fake_executor(price=Decimal("0.4400"), amount=Decimal("10"))]
+        stale = cast(
+            List[ExecutorInfo],
+            [_fake_executor(price=Decimal("0.4400"), amount=Decimal("10"))],
+        )
         controller._build_create_action(
             target_price=Decimal("0.4381"), stops_this_tick=stale
         )
         warning_msg = log_mock.warning.call_args[0][0]
-        self.assertIn("releasing this tick", warning_msg)
+        self.assertIn("XNO", warning_msg)
+        self.assertIn("minimum", warning_msg.lower())
 
 
 class TestBBOPegSellBuildStopActions(unittest.TestCase):
@@ -2971,10 +2999,13 @@ class TestBBOPegSellDetermineExecutorActions(unittest.TestCase):
         market_data_provider.quantize_order_amount.side_effect = (
             quantize_amount_side_effect or (lambda _c, _p, amount: amount)
         )
-        market_data_provider.time.return_value = 1700000000.0  # type: ignore[attr-defined]  # ty: ignore[unresolved-attribute]  # pyright: ignore[reportAttributeAccessIssue]
+        market_data_provider.time.return_value = 1700000000.0
         # Default to ample base balance — see TestBBOPegSellBuildCreateAction
         # for the rationale and tests that override this.
-        market_data_provider.get_available_balance.return_value = Decimal("1000000")  # type: ignore[attr-defined]  # ty: ignore[unresolved-attribute]  # pyright: ignore[reportAttributeAccessIssue]
+        market_data_provider.get_available_balance.return_value = Decimal("1000000")
+        rules = MagicMock()
+        rules.min_notional_size = Decimal("10")
+        market_data_provider.get_trading_rules.return_value = rules
         controller = BBOPegSellController(
             config=config,
             market_data_provider=market_data_provider,
@@ -3367,6 +3398,7 @@ class TestBBOPegSellDowngradeTrapScenario(IsolatedAsyncioWrapperTestCase):
         market_data_provider = MagicMock(spec=MarketDataProvider)
         rules = MagicMock()
         rules.min_price_increment = Decimal("0.0001")
+        rules.min_notional_size = Decimal("10")
         market_data_provider.get_trading_rules.return_value = rules
         # PriceType.BestBid on sell side returns the opposite-side guard.
         market_data_provider.get_price_by_type.return_value = Decimal("0.4295")
@@ -3377,8 +3409,8 @@ class TestBBOPegSellDowngradeTrapScenario(IsolatedAsyncioWrapperTestCase):
         market_data_provider.quantize_order_amount.side_effect = lambda _c, _p, amount: (
             amount
         )
-        market_data_provider.time.return_value = 1700000000.0  # type: ignore[attr-defined]  # ty: ignore[unresolved-attribute]  # pyright: ignore[reportAttributeAccessIssue]
-        market_data_provider.get_available_balance.return_value = Decimal("1000000")  # type: ignore[attr-defined]  # ty: ignore[unresolved-attribute]  # pyright: ignore[reportAttributeAccessIssue]
+        market_data_provider.time.return_value = 1700000000.0
+        market_data_provider.get_available_balance.return_value = Decimal("1000000")
 
         controller = BBOPegSellController(
             config=config,
@@ -3499,6 +3531,7 @@ class TestBBOPegSellCancelLagScenario(IsolatedAsyncioWrapperTestCase):
         market_data_provider = MagicMock(spec=MarketDataProvider)
         rules = MagicMock()
         rules.min_price_increment = Decimal("0.0001")
+        rules.min_notional_size = Decimal("10")
         market_data_provider.get_trading_rules.return_value = rules
         # best_bid (opposite side) — deep enough that spread stays > 2%.
         market_data_provider.get_price_by_type.return_value = Decimal("0.4182")

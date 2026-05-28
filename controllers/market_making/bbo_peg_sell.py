@@ -140,11 +140,11 @@ class BBOPegSellController(ControllerBase):
         # Cache of the anti-spoof gate's last state, so we only log on
         # blocked <-> cleared transitions. False = not currently gated.
         self._gate_blocked: bool = False
-        # Cache of the pre-flight balance check's last state, so we only log
-        # on insufficient <-> sufficient transitions. False = balance was OK
-        # last time we tried to create. Without this rate limit, an empty
-        # account would emit a "not enough budget" warning every tick.
-        self._balance_insufficient_logged: bool = False
+        # Cache of the sellability check's last state, so we only log on
+        # not-sellable <-> sellable transitions. False = the holding was
+        # sellable last time we tried to create. Without this rate limit, a
+        # holding parked below the exchange minimum would warn every tick.
+        self._not_sellable_logged: bool = False
         # Cache of the last logged (executor_id, price) snapshot of active
         # executors. None on the very first tick so the initial snapshot
         # always logs. Used by _log_active_executors_snapshot to detect
@@ -518,23 +518,32 @@ class BBOPegSellController(ControllerBase):
         stops_this_tick: Optional[List[ExecutorInfo]] = None,
     ) -> Optional[CreateExecutorAction]:
         """Build a LIMIT_MAKER sell at target_price.
-        Returns None if quantized amount is zero (book can't support an
-        order) or if the account's available base balance is below the
-        required amount (pre-flight check that prevents the framework's
-        downstream INSUFFICIENT_BALANCE log spam at every tick).
+
+        Sizes the order at min(configured notional, base actually held), so
+        the position is swept even when price has moved against us since the
+        buy. Selling the configured ``total_amount_quote / price`` outright
+        demands more base than we hold whenever price has fallen — the order
+        would be rejected and the position would never clear (the classic
+        "need 859 / have 851" stall). Capping at the held balance sells
+        whatever we have instead.
+
+        Returns None when there is nothing worth selling: a non-positive
+        quantized amount, or a holding whose notional is below the exchange
+        minimum (sub-minimum dust the exchange rejects — it stays parked
+        until a top-up buy or a price move lifts it back over the minimum).
 
         ``stops_this_tick`` is the list of our own active executors being
         cancelled in this same tick; their amounts are credited back to the
-        balance check (see _has_sufficient_base_balance).
+        available balance (see _available_base_for_sale).
         """
+        available = self._available_base_for_sale(stops_this_tick or [])
+        desired = self.config.total_amount_quote / target_price
         amount = self.market_data_provider.quantize_order_amount(
             self.config.connector_name,
             self.config.trading_pair,
-            self.config.total_amount_quote / target_price,
+            min(desired, available),
         )
-        if amount <= 0:
-            return None
-        if not self._has_sufficient_base_balance(amount, stops_this_tick or []):
+        if not self._is_sellable(amount, target_price):
             return None
         return CreateExecutorAction(
             controller_id=self.config.id,
@@ -549,30 +558,21 @@ class BBOPegSellController(ControllerBase):
             ),
         )
 
-    def _has_sufficient_base_balance(
-        self,
-        required_amount: Decimal,
-        stops_this_tick: List[ExecutorInfo],
-    ) -> bool:
-        """Read the connector's available base balance and compare to the
-        amount we're about to attempt to sell. Returns False if insufficient
-        (caller skips emitting the Create).
+    def _available_base_for_sale(
+        self, stops_this_tick: List[ExecutorInfo]
+    ) -> Decimal:
+        """Base balance we can actually sell this tick: the connector's
+        available base balance plus the amounts locked in our own active
+        orders that are being cancelled in this same tick.
 
-        ``stops_this_tick`` is the list of our own active executors being
-        cancelled in this same tick. Their amounts are credited back to the
-        available balance because the connector's ``get_available_balance``
-        subtracts amounts locked in our own open orders, but those locks
-        are about to be released by the Stop actions emitted earlier in
-        this same tick. Without this credit, a quote-walk that cancels and
-        re-creates triggers a self-inflicted insufficient-balance loop:
-        new order blocked → cancel propagates → balance recovers → new
-        order placed → external moves → cancel + try create → blocked
-        again. Result is ~50% duty cycle, orders live in book for only
-        ~3s, far too brief to fill.
-
-        Emits a state-transition log: warning on insufficient->sufficient,
-        info on recovery. Rate-limited via _balance_insufficient_logged so
-        an empty account doesn't spam one warning per tick.
+        The connector's ``get_available_balance`` subtracts base locked in
+        our own open orders. When the walker cancels and re-creates within a
+        tick, those locks are released by the Stop actions emitted earlier in
+        the same tick — but the connector hasn't observed the cancel yet.
+        Without crediting the about-to-release amounts, a quote-walk would
+        self-starve: the new order would be sized down (or skipped) by
+        inventory its own soon-to-be-cancelled order is still holding,
+        producing a ~50% duty cycle where orders live ~3s and never fill.
         """
         base_asset = self.config.trading_pair.split("-")[0]
         available = self.market_data_provider.get_available_balance(
@@ -587,22 +587,42 @@ class BBOPegSellController(ControllerBase):
             ),
             Decimal("0"),
         )
-        effective_available = available + pending_release
-        if effective_available < required_amount:
-            if not self._balance_insufficient_logged:
+        return available + pending_release
+
+    def _is_sellable(self, amount: Decimal, target_price: Decimal) -> bool:
+        """Return True when ``amount`` is worth placing as a sell. Returns
+        False (with a rate-limited state-transition log) when there's nothing
+        sellable: a non-positive amount (no inventory / quantized to zero),
+        or a notional below the exchange minimum (min_notional_size). The
+        exchange rejects sub-minimum orders, so we skip them rather than spam
+        failed placements; the holding stays parked until a top-up buy or a
+        price move lifts it back over the minimum.
+
+        Logs once on sellable -> not-sellable and once on the way back,
+        mirroring the anti-spoof gate's state-transition pattern. Rate-limited
+        via _not_sellable_logged so a parked holding doesn't warn every tick.
+        """
+        base_asset = self.config.trading_pair.split("-")[0]
+        min_notional = self.market_data_provider.get_trading_rules(
+            self.config.connector_name, self.config.trading_pair
+        ).min_notional_size
+        notional = amount * target_price
+        if amount <= 0 or notional < min_notional:
+            if not self._not_sellable_logged:
                 self.logger().warning(
-                    f"{self.config.log_prefix} insufficient {base_asset} balance: "
-                    f"have {available} (+{pending_release} releasing this tick "
-                    f"= {effective_available}), need {required_amount}. "
-                    f"Suppressing further warnings until balance recovers."
+                    f"{self.config.log_prefix} nothing sellable: holding "
+                    f"{amount} {base_asset} (~{notional} quote) is below the "
+                    f"exchange minimum {min_notional}. Parking until a top-up "
+                    f"buy or price move lifts it over the minimum. Suppressing "
+                    f"further warnings until sellable."
                 )
-                self._balance_insufficient_logged = True
+                self._not_sellable_logged = True
             return False
-        if self._balance_insufficient_logged:
+        if self._not_sellable_logged:
             self.logger().info(
-                f"{self.config.log_prefix} {base_asset} balance recovered: "
-                f"have {available} (+{pending_release} releasing this tick "
-                f"= {effective_available}), need {required_amount}. Resuming quotes."
+                f"{self.config.log_prefix} sellable again: holding {amount} "
+                f"{base_asset} (~{notional} quote) >= exchange minimum "
+                f"{min_notional}. Resuming sell quotes."
             )
-            self._balance_insufficient_logged = False
+            self._not_sellable_logged = False
         return True

@@ -49,6 +49,8 @@ controllers_config:
   - conf_bbo_peg_flow_sell.yml
   - conf_bbo_peg_crts.yml
   - conf_bbo_peg_crts_sell.yml
+  - conf_bbo_peg_vic.yml       # min_spread_pct is a placeholder — verify VIC's live spread/tick
+  - conf_bbo_peg_vic_sell.yml
 
 # Optional safety brakes (USDT). Comment out / set null to disable.
 # max_controller_drawdown_quote stops a single controller if its drawdown from peak exceeds this.

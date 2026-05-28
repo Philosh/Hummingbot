@@ -18,7 +18,13 @@ min_spread_pct: 0.014
 
 cancel_debounce_seconds: 2.0
 max_fills: 10
-max_buy_lead: 1
+
+# Inventory-value cap: pause buys while base inventory (valued at mid) is
+# >= this, resume once a sell clears it below. Wallet-based gate that
+# replaces the count-based max_buy_lead; the sell side runs independently on
+# whatever inventory is held. Set to 10 (below the $11 order size) so a
+# single filled lot reliably pauses further buys. HTX min notional is ~$10.
+max_inventory_quote: 10
 
 manual_kill_switch: false
 initial_positions: []

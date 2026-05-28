@@ -1,0 +1,32 @@
+id: bbo_peg_vic_htx
+controller_name: bbo_peg_buy
+controller_type: market_making
+
+connector_name: htx
+trading_pair: VIC-USDT
+
+# Single LIMIT_MAKER buy at external_best_bid + 1 tick. $11 per side.
+total_amount_quote: 11
+
+update_interval: 3.0
+
+# Anti-spoof gate. PLACEHOLDER — VERIFY BEFORE ENABLING. VIC's live spread
+# and tick size were not known when this file was written. On the scan VIC
+# showed +344.82% over 24h on only ~$264 of volume, so expect a wide, jumpy
+# spread and very few (if any) maker fills. Pull the order book, set this to
+# ~60% of the observed natural spread, and confirm the tick isn't a chunky
+# fraction of price before trusting these numbers.
+min_spread_pct: 0.020
+
+cancel_debounce_seconds: 2.0
+max_fills: 10
+
+# Inventory-value cap: pause buys while base inventory (valued at mid) is
+# >= this, resume once a sell clears it below. Wallet-based gate; the sell
+# side runs independently on whatever inventory is held. HTX min notional
+# is ~$10; 10.1 sits just below the $11 order size and just above that
+# minimum, so one lot reliably pauses buys and unsellable dust re-opens them.
+max_inventory_quote: 10.1
+
+manual_kill_switch: false
+initial_positions: []

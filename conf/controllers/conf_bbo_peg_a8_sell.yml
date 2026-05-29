@@ -7,7 +7,7 @@ trading_pair: A8-USDT
 
 total_amount_quote: 11
 update_interval: 1.0
-min_spread_pct: 0.028
+min_spread_pct: 0
 cancel_debounce_seconds: 2.0
 max_fills: 10
 

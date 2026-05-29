@@ -25,7 +25,7 @@ update_interval: 1.0
 # own quote may compress the measured spread by 1 tick. With a 1.4%
 # threshold and WAVES's ~2.4% spread, there's a ~1% margin before that
 # compression matters in normal markets.
-min_spread_pct: 0.014
+min_spread_pct: 0
 
 # Same 2.0s cancel-debounce as XNO.
 cancel_debounce_seconds: 2.0

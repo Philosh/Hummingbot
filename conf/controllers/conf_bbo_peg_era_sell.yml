@@ -27,7 +27,7 @@ update_interval: 1.0
 # gate references raw best_bid (not self-excluded), so the buy controller's
 # own quote may compress the measured spread by 1 tick. With a 1.5%
 # threshold, there's now a tighter margin before that compression matters.
-min_spread_pct: 0.015
+min_spread_pct: 0
 
 # Same 2.0s cancel-debounce as XNO/WAVES.
 cancel_debounce_seconds: 2.0

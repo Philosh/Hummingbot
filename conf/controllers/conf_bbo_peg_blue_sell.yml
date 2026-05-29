@@ -15,7 +15,7 @@ update_interval: 1.0
 
 # Anti-spoof gate, matching the buy side. See buy config for rationale and
 # the coarse-tick caveat for BLUE.
-min_spread_pct: 0.025
+min_spread_pct: 0
 
 # Same 2.0s cancel-debounce.
 cancel_debounce_seconds: 2.0

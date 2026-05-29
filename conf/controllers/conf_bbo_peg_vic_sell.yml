@@ -9,7 +9,7 @@ total_amount_quote: 11
 update_interval: 3.0
 # Mirrors the buy gate — see conf_bbo_peg_vic.yml. PLACEHOLDER, verify
 # against VIC's live spread before enabling.
-min_spread_pct: 0.020
+min_spread_pct: 0
 cancel_debounce_seconds: 2.0
 max_fills: 10
 

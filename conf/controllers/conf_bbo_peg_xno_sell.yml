@@ -25,7 +25,7 @@ update_interval: 2.0
 # own quote may compress the measured spread by 1 tick. In a market with a
 # natural spread close to this threshold, both sides may end up in a cancel-
 # loop. Not fixed in this iteration — track via [bbo_peg_sell] gate_* logs.
-min_spread_pct: 0.02
+min_spread_pct: 0
 
 # How long to remember each just-cancelled order's (price, amount) so the
 # walker keeps treating it as ours during the cancel-propagation lag window.

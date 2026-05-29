@@ -8,7 +8,7 @@ trading_pair: REI-USDT
 total_amount_quote: 11
 update_interval: 3.0
 # Mirrors the buy gate. Single-snapshot estimate (2026-05-29) — re-tune live.
-min_spread_pct: 0.05
+min_spread_pct: 0
 cancel_debounce_seconds: 2.0
 max_fills: 10
 

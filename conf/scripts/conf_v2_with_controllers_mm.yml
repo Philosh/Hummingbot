@@ -37,20 +37,28 @@ controllers_config:
   # - conf_bbo_peg_a8_sell.yml      # paused
   # - conf_bbo_peg_ping.yml         # paused
   # - conf_bbo_peg_ping_sell.yml    # paused
-  - conf_bbo_peg_pyr.yml
-  - conf_bbo_peg_pyr_sell.yml
+  # Rotated to the LQTY/REI/HOT set on 2026-05-29 (widest real spread,
+  # liquid, deposit+withdraw open). Prior tokens disabled below.
+  # - conf_bbo_peg_pyr.yml          # disabled (rotated out)
+  # - conf_bbo_peg_pyr_sell.yml     # disabled
   # - conf_bbo_peg_audio.yml        # disabled
   # - conf_bbo_peg_audio_sell.yml   # disabled
   # - conf_bbo_peg_sis.yml          # disabled
   # - conf_bbo_peg_sis_sell.yml     # disabled
-  - conf_bbo_peg_glmr.yml
-  - conf_bbo_peg_glmr_sell.yml
-  - conf_bbo_peg_flow.yml
-  - conf_bbo_peg_flow_sell.yml
-  - conf_bbo_peg_crts.yml
-  - conf_bbo_peg_crts_sell.yml
-  - conf_bbo_peg_vic.yml       # min_spread_pct is a placeholder — verify VIC's live spread/tick
-  - conf_bbo_peg_vic_sell.yml
+  # - conf_bbo_peg_glmr.yml         # disabled (rotated out)
+  # - conf_bbo_peg_glmr_sell.yml    # disabled
+  # - conf_bbo_peg_flow.yml         # disabled (rotated out; spread < 2% gate anyway)
+  # - conf_bbo_peg_flow_sell.yml    # disabled
+  # - conf_bbo_peg_crts.yml         # disabled (rotated out)
+  # - conf_bbo_peg_crts_sell.yml    # disabled
+  # - conf_bbo_peg_vic.yml          # disabled (deposits+withdrawals SUSPENDED, dislocated book)
+  # - conf_bbo_peg_vic_sell.yml     # disabled
+  - conf_bbo_peg_lqty.yml
+  - conf_bbo_peg_lqty_sell.yml
+  - conf_bbo_peg_rei.yml
+  - conf_bbo_peg_rei_sell.yml
+  - conf_bbo_peg_hot.yml
+  - conf_bbo_peg_hot_sell.yml
 
 # Optional safety brakes (USDT). Comment out / set null to disable.
 # max_controller_drawdown_quote stops a single controller if its drawdown from peak exceeds this.

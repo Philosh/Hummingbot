@@ -37,5 +37,13 @@
 !controllers/conf_bbo_peg_flow_sell.yml
 !controllers/conf_bbo_peg_crts.yml
 !controllers/conf_bbo_peg_crts_sell.yml
+!controllers/conf_bbo_peg_vic.yml
+!controllers/conf_bbo_peg_vic_sell.yml
+!controllers/conf_bbo_peg_lqty.yml
+!controllers/conf_bbo_peg_lqty_sell.yml
+!controllers/conf_bbo_peg_rei.yml
+!controllers/conf_bbo_peg_rei_sell.yml
+!controllers/conf_bbo_peg_hot.yml
+!controllers/conf_bbo_peg_hot_sell.yml
 !scripts/conf_v2_with_controllers_mm.yml
 !strategies/conf_pure_mm_xno_1.yml

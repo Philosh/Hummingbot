@@ -1,0 +1,30 @@
+id: bbo_peg_rei_htx
+controller_name: bbo_peg_buy
+controller_type: market_making
+
+connector_name: htx
+trading_pair: REI-USDT
+
+# Single LIMIT_MAKER buy at external_best_bid + 1 tick. $11 per side.
+total_amount_quote: 11
+
+update_interval: 3.0
+
+# Anti-spoof gate. On 2026-05-29 REI showed ~10.1% spread on $451K 24h
+# volume, deposit+withdraw open; gate set to 5%. NOTE: REI carries HTX's ST
+# (special-treatment) tag — watch for delisting or trading-halt notices.
+# SINGLE-SNAPSHOT ESTIMATE — re-tune live.
+min_spread_pct: 0.05
+
+cancel_debounce_seconds: 2.0
+max_fills: 10
+
+# Inventory-value cap: pause buys while base inventory (valued at mid) is
+# >= this, resume once a sell clears it below. Wallet-based gate replacing
+# count-based max_buy_lead; the sell side runs independently on held
+# inventory. 10.1 sits just below the $11 order size and just above the ~$10
+# HTX minimum.
+max_inventory_quote: 10.1
+
+manual_kill_switch: false
+initial_positions: []

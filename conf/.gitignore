@@ -39,6 +39,8 @@
 !controllers/conf_bbo_peg_crts_sell.yml
 !controllers/conf_bbo_peg_vic.yml
 !controllers/conf_bbo_peg_vic_sell.yml
+!controllers/conf_bbo_peg_spell.yml
+!controllers/conf_bbo_peg_spell_sell.yml
 !controllers/conf_bbo_peg_lqty.yml
 !controllers/conf_bbo_peg_lqty_sell.yml
 !controllers/conf_bbo_peg_rei.yml

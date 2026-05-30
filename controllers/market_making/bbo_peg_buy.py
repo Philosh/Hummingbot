@@ -61,19 +61,19 @@ class BBOPegBuyConfig(ControllerConfigBase):
     )
     min_spread_pct: Decimal = Field(
         default=Decimal("0.02"),
-        description="Anti-spoof gate. Refuse to quote when (best_ask - external_best_bid) / external_best_bid < this. Default 0.02 = 2%. HARD FLOOR (production): must be > 0.007 (0.7%) — that's the round-trip taker fee (0.4%) plus adverse-selection buffer (0.3%) on HTX retail tier. Below 0.7% the strategy is structurally unprofitable. Adjust upward, never below. Value 0 is allowed as an explicit gate-disabled sentinel for unit tests; production YAMLs must never use it.",
+        description="Anti-spoof gate. Refuse to quote when (best_ask - external_best_bid) / external_best_bid < this. Default 0.02 = 2%. HARD FLOOR (production): must be > 0.004 (0.4%) — that's the round-trip taker fee on HTX retail tier. Below 0.4% the strategy is structurally unprofitable regardless of adverse selection. Value 0 is allowed as an explicit gate-disabled sentinel for unit tests; production YAMLs must never use it.",
     )
 
     @field_validator("min_spread_pct")
     @classmethod
     def _min_spread_pct_above_floor(cls, v: Decimal) -> Decimal:
         # Allow 0 (explicit "gate disabled" sentinel used by tests) but reject
-        # any positive value below the production break-even floor of 0.7%.
-        if v != Decimal("0") and v <= Decimal("0.007"):
+        # any positive value below the round-trip fee floor of 0.4%.
+        if v != Decimal("0") and v <= Decimal("0.004"):
             raise ValueError(
-                f"min_spread_pct={v} is below the 0.7% production floor "
-                f"(round-trip fees 0.4% + adverse-selection 0.3%). Set to 0 "
-                f"explicitly only for testing; production configs must use > 0.007."
+                f"min_spread_pct={v} is below the 0.4% production floor "
+                f"(round-trip fees 0.4% on HTX retail). Set to 0 "
+                f"explicitly only for testing; production configs must use > 0.004."
             )
         return v
     cancel_debounce_seconds: float = Field(

@@ -47,12 +47,14 @@ controllers_config:
   # - conf_bbo_peg_sis_sell.yml     # disabled
   # - conf_bbo_peg_glmr.yml         # disabled (rotated out)
   # - conf_bbo_peg_glmr_sell.yml    # disabled
-  # - conf_bbo_peg_flow.yml         # disabled (rotated out; spread < 2% gate anyway)
-  # - conf_bbo_peg_flow_sell.yml    # disabled
+  - conf_bbo_peg_flow.yml
+  - conf_bbo_peg_flow_sell.yml
   # - conf_bbo_peg_crts.yml         # disabled (rotated out)
   # - conf_bbo_peg_crts_sell.yml    # disabled
   # - conf_bbo_peg_vic.yml          # disabled (deposits+withdrawals SUSPENDED, dislocated book)
   # - conf_bbo_peg_vic_sell.yml     # disabled
+  - conf_bbo_peg_spell.yml
+  - conf_bbo_peg_spell_sell.yml
   - conf_bbo_peg_lqty.yml
   - conf_bbo_peg_lqty_sell.yml
   - conf_bbo_peg_rei.yml

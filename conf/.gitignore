@@ -39,6 +39,16 @@
 !controllers/conf_bbo_peg_crts_sell.yml
 !controllers/conf_bbo_peg_vic.yml
 !controllers/conf_bbo_peg_vic_sell.yml
+!controllers/conf_bbo_peg_swtch.yml
+!controllers/conf_bbo_peg_swtch_sell.yml
+!controllers/conf_bbo_peg_ctx.yml
+!controllers/conf_bbo_peg_ctx_sell.yml
+!controllers/conf_bbo_peg_obol.yml
+!controllers/conf_bbo_peg_obol_sell.yml
+!controllers/conf_bbo_peg_hpos10i.yml
+!controllers/conf_bbo_peg_hpos10i_sell.yml
+!controllers/conf_bbo_peg_ufd.yml
+!controllers/conf_bbo_peg_ufd_sell.yml
 !controllers/conf_bbo_peg_spell.yml
 !controllers/conf_bbo_peg_spell_sell.yml
 !controllers/conf_bbo_peg_lqty.yml

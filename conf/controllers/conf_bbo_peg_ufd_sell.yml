@@ -1,0 +1,15 @@
+id: bbo_peg_ufd_htx_sell
+controller_name: bbo_peg_sell
+controller_type: market_making
+
+connector_name: htx
+trading_pair: UFD-USDT
+
+total_amount_quote: 11
+update_interval: 3.0
+min_spread_pct: 0
+cancel_debounce_seconds: 2.0
+max_fills: 10
+
+manual_kill_switch: false
+initial_positions: []

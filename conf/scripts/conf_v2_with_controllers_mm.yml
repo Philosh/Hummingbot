@@ -53,6 +53,16 @@ controllers_config:
   # - conf_bbo_peg_crts_sell.yml    # disabled
   # - conf_bbo_peg_vic.yml          # disabled (deposits+withdrawals SUSPENDED, dislocated book)
   # - conf_bbo_peg_vic_sell.yml     # disabled
+  - conf_bbo_peg_swtch.yml
+  - conf_bbo_peg_swtch_sell.yml
+  - conf_bbo_peg_ctx.yml
+  - conf_bbo_peg_ctx_sell.yml
+  - conf_bbo_peg_obol.yml
+  - conf_bbo_peg_obol_sell.yml
+  - conf_bbo_peg_hpos10i.yml
+  - conf_bbo_peg_hpos10i_sell.yml
+  - conf_bbo_peg_ufd.yml
+  - conf_bbo_peg_ufd_sell.yml
   - conf_bbo_peg_spell.yml
   - conf_bbo_peg_spell_sell.yml
   - conf_bbo_peg_lqty.yml

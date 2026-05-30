@@ -14,7 +14,7 @@ update_interval: 3.0
 # volume, deposit+withdraw open; gate set to 5%, well inside that with
 # headroom. SINGLE-SNAPSHOT ESTIMATE — re-tune live: lower if the controller
 # sits gate-blocked, raise it if fills look toxic.
-min_spread_pct: 0.02
+min_spread_pct: 0.035
 
 cancel_debounce_seconds: 2.0
 max_fills: 10

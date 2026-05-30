@@ -18,7 +18,7 @@ update_interval: 3.0
 # capture nearly the full amount after the two tick deductions.
 # WARNING: 24h volume is only $42k. Quotes may sit for a LONG time before
 # any taker hits them. Don't expect frequent fills.
-min_spread_pct: 0.006
+min_spread_pct: 0.02
 
 cancel_debounce_seconds: 2.0
 max_fills: 10

@@ -11,7 +11,7 @@ update_interval: 3.0
 
 # Anti-spoof gate. On 2026-05-29 CTX showed ~40% spread on $740K 24h
 # volume, withdrawal open; gate set to 15%. SINGLE-SNAPSHOT ESTIMATE — re-tune live.
-min_spread_pct: 0.15
+min_spread_pct: 0.25
 
 cancel_debounce_seconds: 2.0
 max_fills: 10

@@ -34,3 +34,4 @@ max_inventory_quote: 10.1
 
 manual_kill_switch: false
 initial_positions: []
+bid_depth: 2

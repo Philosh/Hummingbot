@@ -32,3 +32,4 @@ cancel_debounce_seconds: 1.0
 
 manual_kill_switch: false
 initial_positions: []
+bid_depth: 2

@@ -1131,7 +1131,7 @@ class TestBBOPegBuyWalkBidsForFirstExternal(unittest.TestCase):
 
     def test_empty_book_returns_none_result_and_empty_top_levels(self):
         controller, _ = _make_controller_for_walker(bid_levels=[])
-        result, top_levels = controller._walk_bids_for_first_external({})
+        result, top_levels = controller._walk_bids_for_nth_external({})
         self.assertIsNone(result)
         self.assertEqual(top_levels, [])
 
@@ -1139,7 +1139,7 @@ class TestBBOPegBuyWalkBidsForFirstExternal(unittest.TestCase):
         controller, _ = _make_controller_for_walker(
             bid_levels=[(Decimal("0.4380"), Decimal("100"))]
         )
-        result, _ = controller._walk_bids_for_first_external({})
+        result, _ = controller._walk_bids_for_nth_external({})
         self.assertEqual(result, Decimal("0.4380"))
 
     def test_returns_none_when_all_levels_fully_ours(self):
@@ -1156,7 +1156,7 @@ class TestBBOPegBuyWalkBidsForFirstExternal(unittest.TestCase):
             Decimal("0.4379"): Decimal("50"),
             Decimal("0.4378"): Decimal("200"),
         }
-        result, _ = controller._walk_bids_for_first_external(my_volume)
+        result, _ = controller._walk_bids_for_nth_external(my_volume)
         self.assertIsNone(result)
 
     def test_caps_at_ten_levels_for_result(self):
@@ -1166,7 +1166,7 @@ class TestBBOPegBuyWalkBidsForFirstExternal(unittest.TestCase):
         bid_levels.append((Decimal("0.4370"), Decimal("999")))  # 11th, external
         my_volume = {p: Decimal("10") for p, _ in bid_levels[:10]}
         controller, _ = _make_controller_for_walker(bid_levels=bid_levels)
-        result, _ = controller._walk_bids_for_first_external(my_volume)
+        result, _ = controller._walk_bids_for_nth_external(my_volume)
         self.assertIsNone(result)
 
     # --- top_levels return contract ---
@@ -1175,7 +1175,7 @@ class TestBBOPegBuyWalkBidsForFirstExternal(unittest.TestCase):
         # 7 levels in book → top_levels exactly 5 (top-5 capture for logging).
         bid_levels = [(Decimal(f"0.43{80 - i:02d}"), Decimal("100")) for i in range(7)]
         controller, _ = _make_controller_for_walker(bid_levels=bid_levels)
-        _, top_levels = controller._walk_bids_for_first_external({})
+        _, top_levels = controller._walk_bids_for_nth_external({})
         self.assertEqual(len(top_levels), 5)
 
     def test_top_levels_contains_all_when_book_has_fewer_than_five(self):
@@ -1187,7 +1187,7 @@ class TestBBOPegBuyWalkBidsForFirstExternal(unittest.TestCase):
                 (Decimal("0.4378"), Decimal("200")),
             ]
         )
-        _, top_levels = controller._walk_bids_for_first_external({})
+        _, top_levels = controller._walk_bids_for_nth_external({})
         self.assertEqual(len(top_levels), 3)
 
     def test_top_levels_preserves_top_down_order(self):
@@ -1199,7 +1199,7 @@ class TestBBOPegBuyWalkBidsForFirstExternal(unittest.TestCase):
                 (Decimal("0.4378"), Decimal("200")),
             ]
         )
-        _, top_levels = controller._walk_bids_for_first_external({})
+        _, top_levels = controller._walk_bids_for_nth_external({})
         expected = [
             (float(Decimal("0.4380")), float(Decimal("100"))),
             (float(Decimal("0.4379")), float(Decimal("50"))),
@@ -1212,7 +1212,7 @@ class TestBBOPegBuyWalkBidsForFirstExternal(unittest.TestCase):
         controller, _ = _make_controller_for_walker(
             bid_levels=[(Decimal("0.4380"), Decimal("100"))]
         )
-        _, top_levels = controller._walk_bids_for_first_external({})
+        _, top_levels = controller._walk_bids_for_nth_external({})
         self.assertEqual(len(top_levels), 1)
         price, amount = top_levels[0]
         self.assertIsInstance(price, float)
@@ -1233,7 +1233,7 @@ class TestBBOPegBuyWalkBidsForFirstExternal(unittest.TestCase):
             ]
         )
         my_volume = {Decimal("0.4380"): Decimal("100")}
-        result, _ = controller._walk_bids_for_first_external(my_volume)
+        result, _ = controller._walk_bids_for_nth_external(my_volume)
         self.assertEqual(result, Decimal("0.4379"))
 
     # --- Negative cases (what the walker must NOT do) ---
@@ -1254,7 +1254,7 @@ class TestBBOPegBuyWalkBidsForFirstExternal(unittest.TestCase):
             Decimal("0.4380"): Decimal("100"),
             Decimal("0.4378"): Decimal("200"),
         }
-        result, _ = controller._walk_bids_for_first_external(my_volume)
+        result, _ = controller._walk_bids_for_nth_external(my_volume)
         self.assertNotEqual(result, Decimal("0.4380"))
         self.assertNotEqual(result, Decimal("0.4378"))
 

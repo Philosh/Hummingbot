@@ -95,6 +95,11 @@ class BBOPegBuyConfig(ControllerConfigBase):
         ge=0,
         description="Inventory value cap, in quote currency (e.g. USDT). When set, the buy controller refuses to emit a Create once the current base inventory — marked at the live mid price — reaches this value, and re-enables buys only after the value falls back below it. Independent of max_buy_lead: max_buy_lead caps the *count* of unmatched fills, this caps the *quote value* of accumulated base. Inventory is read from the connector's total base balance, so any base already in the account (including amounts locked in resting sells) counts toward the cap. None (default) disables it.",
     )
+    bid_depth: int = Field(
+        default=1,
+        ge=1,
+        description="Which external bid level to peg to. 1 (default) = best external bid (top of queue). 2 = second-best external bid (one level below best bid — reduces spike-chasing at the cost of less frequent fills). Higher values sit deeper in the book.",
+    )
 
     def update_markets(self, markets: MarketDict) -> MarketDict:
         # Upstream's add_or_update signature mistypes *args as the set type
@@ -182,7 +187,7 @@ class BBOPegBuyController(ControllerBase):
         can later audit why a particular target_price was picked.
         """
         my_volume_by_price = self._compute_own_volume_by_price()
-        result, top_levels = self._walk_bids_for_first_external(my_volume_by_price)
+        result, top_levels = self._walk_bids_for_nth_external(my_volume_by_price, self.config.bid_depth)
         self._log_external_bid_change(result, top_levels, my_volume_by_price)
         return result
 
@@ -245,18 +250,21 @@ class BBOPegBuyController(ControllerBase):
                 continue
             self._pending_cancels[str(e.id)] = (cfg.price, cfg.amount, until)
 
-    def _walk_bids_for_first_external(
-        self, my_volume_by_price: Dict[Decimal, Decimal]
+    def _walk_bids_for_nth_external(
+        self, my_volume_by_price: Dict[Decimal, Decimal], n: int = 1
     ) -> Tuple[Optional[Decimal], List[Tuple[float, float]]]:
         """Walk the top 10 bid levels and return:
-        - the highest price where (book amount - our amount) > 0, else None
+        - the nth-highest price where (book amount - our amount) > 0, else None
         - the top-5 levels as (price, amount) float tuples, for logging
+        n=1 returns the best external bid (original behavior).
+        n=2 returns the second-best external bid (sits one level below best).
         """
         order_book = self.market_data_provider.get_order_book(
             self.config.connector_name, self.config.trading_pair
         )
         top_levels: List[Tuple[float, float]] = []
         result: Optional[Decimal] = None
+        external_found: int = 0
         for i, row in enumerate(order_book.bid_entries()):
             if i >= 10:
                 break
@@ -267,7 +275,9 @@ class BBOPegBuyController(ControllerBase):
             if result is None:
                 external_amount = amount - my_volume_by_price.get(price, Decimal("0"))
                 if external_amount > 0:
-                    result = price
+                    external_found += 1
+                    if external_found >= n:
+                        result = price
         return result, top_levels
 
     def _log_external_bid_change(

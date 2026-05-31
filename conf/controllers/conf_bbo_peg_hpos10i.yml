@@ -7,13 +7,13 @@ trading_pair: HPOS10I-USDT
 
 total_amount_quote: 11
 
-update_interval: 3.0
+update_interval: 1.0
 
 # Anti-spoof gate. On 2026-05-29 HPOS10I showed ~20% spread on $1.1M 24h
 # volume, withdrawal open; gate set to 15%. SINGLE-SNAPSHOT ESTIMATE — re-tune live.
 min_spread_pct: 0.15
 
-cancel_debounce_seconds: 2.0
+cancel_debounce_seconds: 1.0
 max_fills: 10
 
 max_inventory_quote: 10.1

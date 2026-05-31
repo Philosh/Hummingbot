@@ -9,14 +9,14 @@ trading_pair: PYR-USDT
 total_amount_quote: 11
 
 # 3.0s tick; cancel_debounce_seconds (2.0) still exceeds it.
-update_interval: 3.0
+update_interval: 1.0
 
 # Anti-spoof gate calibrated for PYR's ~2.3% natural spread (60% of spread).
 # PYR = Vulcan Forged gaming/NFT token. Clean 0.041% tick — XNO-analog
 # economics; spreads stable on this profile usually.
 min_spread_pct: 0.014
 
-cancel_debounce_seconds: 2.0
+cancel_debounce_seconds: 1.0
 max_fills: 10
 
 # Inventory-value cap: pause buys while base inventory (valued at mid) is

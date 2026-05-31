@@ -18,7 +18,7 @@ update_interval: 1.0
 # page before scaling capital. Watch the gate logs for flapping.
 min_spread_pct: 0.026
 
-cancel_debounce_seconds: 2.0
+cancel_debounce_seconds: 1.0
 max_fills: 10
 max_buy_lead: 1
 

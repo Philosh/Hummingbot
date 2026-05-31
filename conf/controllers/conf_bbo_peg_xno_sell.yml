@@ -14,7 +14,7 @@ total_amount_quote: 20
 # Same 2.0s as the buy side to give the exchange order book WebSocket time to
 # reflect our cancels before the next walker pass — without it the walker
 # chases its own just-cancelled orders as if they were external asks.
-update_interval: 2.0
+update_interval: 1.0
 
 # Anti-spoof gate. Refuse to quote when the external market spread
 # (external_best_ask - best_bid) / external_best_ask is below this.
@@ -32,7 +32,7 @@ min_spread_pct: 0
 # Without this, the walker chases its own just-cancelled orders as if they
 # were external asks (descending chase direction on the sell side). 2s
 # covers typical HTX cancel-WebSocket latency; set to 0 to disable.
-cancel_debounce_seconds: 2.0
+cancel_debounce_seconds: 1.0
 
 manual_kill_switch: false
 initial_positions: []

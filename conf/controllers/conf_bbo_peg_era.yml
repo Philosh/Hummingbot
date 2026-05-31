@@ -27,7 +27,7 @@ update_interval: 1.0
 min_spread_pct: 0.015
 
 # Same 2.0s cancel-debounce as XNO/WAVES — covers HTX cancel-WebSocket lag.
-cancel_debounce_seconds: 2.0
+cancel_debounce_seconds: 1.0
 
 # N-shot fill latch (1 = original one-shot behavior used by XNO and WAVES
 # when those run). ERA gets 10 because its wider 3.5% natural spread and

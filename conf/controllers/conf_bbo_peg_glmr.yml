@@ -9,7 +9,7 @@ trading_pair: GLMR-USDT
 total_amount_quote: 11
 
 # 3.0s tick; cancel_debounce_seconds (2.0) still exceeds it.
-update_interval: 3.0
+update_interval: 1.0
 
 # Anti-spoof gate for GLMR (~3.1% live spread, 60% rule → ~1.9%).
 # GLMR = Moonbeam Polkadot parachain. Real project.
@@ -20,7 +20,7 @@ update_interval: 3.0
 # — fills may be slower.
 min_spread_pct: 0.020
 
-cancel_debounce_seconds: 2.0
+cancel_debounce_seconds: 1.0
 max_fills: 10
 
 # Inventory-value cap: pause buys while base inventory (valued at mid) is

@@ -19,7 +19,7 @@ update_interval: 1.0
 # of profile spreads can compress quickly on; watch the gate logs.
 min_spread_pct: 0.028
 
-cancel_debounce_seconds: 2.0
+cancel_debounce_seconds: 1.0
 max_fills: 10
 max_buy_lead: 1
 

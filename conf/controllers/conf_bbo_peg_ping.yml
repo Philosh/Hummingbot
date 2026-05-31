@@ -1,0 +1,27 @@
+id: bbo_peg_ping_htx
+controller_name: bbo_peg_buy
+controller_type: market_making
+
+connector_name: htx
+trading_pair: PING-USDT
+
+# Single LIMIT_MAKER buy at external_best_bid + 1 tick. $11 per side to
+# spread capital across WAVES + SUNDOG + ACTSOL + A8 + PING.
+total_amount_quote: 11
+
+# 1.0s tick interval; cancel_debounce_seconds (2.0) still exceeds it.
+update_interval: 2.0
+
+# Anti-spoof gate, calibrated for PING's ~4.4% live natural spread.
+# Rule of thumb: gate ~60% of typical natural spread.
+# NOTE: PING is a less-known token — verify the project on HTX's listing
+# page before scaling capital. Watch the gate logs for flapping.
+min_spread_pct: 0.026
+
+cancel_debounce_seconds: 2.0
+max_fills: 10
+max_buy_lead: 1
+
+manual_kill_switch: false
+initial_positions: []
+bid_depth: 2

@@ -1,0 +1,79 @@
+# Launcher config for v2_with_controllers.py.
+# Running PYR + GLMR + FLOW + CRTS on HTX (4 tokens, 8 controllers).
+# AUDIO and SIS disabled (will not trade until re-enabled).
+#
+# Capital: ~$44 USDT open (4 × $11 buys), max ~$44 inventory
+# (with max_buy_lead=1, each token caps at 1 × $11 unmatched).
+#
+# Per-token gate thresholds (min_spread_pct, calibrated ~60% of natural spread):
+#   PYR    = 0.014 (live spread ~2.3%; clean 0.041% tick)
+#   GLMR   = 0.020 (live spread ~3.1%; VERY chunky 0.78% tick)
+#   FLOW   = 0.020 (spread fluctuates 2.5-8%; clean tick, but only $42k volume)
+#   CRTS   = 0.011 (live spread ~1.8%; clean tick, $181k volume)
+#
+# Per-token max_fills (process-lifetime fill cap): all currently-enabled = 10
+# Per-token max_buy_lead (inventory cap): all currently-enabled = 1
+# (strict 1-for-1 pacing — buy must be matched by a sell before another buy)
+script_file_name: v2_with_controllers.py
+controllers_config:
+  # All previously-deployed tokens paused below.
+  # - conf_bbo_peg_xno.yml          # paused
+  # - conf_bbo_peg_xno_sell.yml     # paused
+  # - conf_bbo_peg_era.yml          # paused (spread compressed)
+  # - conf_bbo_peg_era_sell.yml     # paused
+  # - conf_bbo_peg_blue.yml         # paused (spread compressed)
+  # - conf_bbo_peg_blue_sell.yml    # paused
+  # - conf_bbo_peg_xmn.yml          # paused (edge collapsed)
+  # - conf_bbo_peg_xmn_sell.yml     # paused
+  # - conf_bbo_peg_vsn.yml          # paused (edge collapsed)
+  # - conf_bbo_peg_vsn_sell.yml     # paused
+  # - conf_bbo_peg_waves.yml        # paused (clean reset)
+  # - conf_bbo_peg_waves_sell.yml   # paused
+  # - conf_bbo_peg_sundog.yml       # paused
+  # - conf_bbo_peg_sundog_sell.yml  # paused
+  # - conf_bbo_peg_actsol.yml       # paused
+  # - conf_bbo_peg_actsol_sell.yml  # paused
+  # - conf_bbo_peg_a8.yml           # paused (gate-blocked since startup, no emits)
+  # - conf_bbo_peg_a8_sell.yml      # paused
+  # - conf_bbo_peg_ping.yml         # paused
+  # - conf_bbo_peg_ping_sell.yml    # paused
+  # Rotated to the LQTY/REI/HOT set on 2026-05-29 (widest real spread,
+  # liquid, deposit+withdraw open). Prior tokens disabled below.
+  # - conf_bbo_peg_pyr.yml          # disabled (rotated out)
+  # - conf_bbo_peg_pyr_sell.yml     # disabled
+  # - conf_bbo_peg_audio.yml        # disabled
+  # - conf_bbo_peg_audio_sell.yml   # disabled
+  # - conf_bbo_peg_sis.yml          # disabled
+  # - conf_bbo_peg_sis_sell.yml     # disabled
+  # - conf_bbo_peg_glmr.yml         # disabled (rotated out)
+  # - conf_bbo_peg_glmr_sell.yml    # disabled
+  - conf_bbo_peg_flow.yml
+  - conf_bbo_peg_flow_sell.yml
+  # - conf_bbo_peg_crts.yml         # disabled (rotated out)
+  # - conf_bbo_peg_crts_sell.yml    # disabled
+  # - conf_bbo_peg_vic.yml          # disabled (deposits+withdrawals SUSPENDED, dislocated book)
+  # - conf_bbo_peg_vic_sell.yml     # disabled
+  - conf_bbo_peg_swtch.yml
+  - conf_bbo_peg_swtch_sell.yml
+  - conf_bbo_peg_ctx.yml
+  - conf_bbo_peg_ctx_sell.yml
+  - conf_bbo_peg_obol.yml
+  - conf_bbo_peg_obol_sell.yml
+  - conf_bbo_peg_hpos10i.yml
+  - conf_bbo_peg_hpos10i_sell.yml
+  - conf_bbo_peg_ufd.yml
+  - conf_bbo_peg_ufd_sell.yml
+  - conf_bbo_peg_spell.yml
+  - conf_bbo_peg_spell_sell.yml
+  - conf_bbo_peg_lqty.yml
+  - conf_bbo_peg_lqty_sell.yml
+  - conf_bbo_peg_rei.yml
+  - conf_bbo_peg_rei_sell.yml
+  - conf_bbo_peg_hot.yml
+  - conf_bbo_peg_hot_sell.yml
+
+# Optional safety brakes (USDT). Comment out / set null to disable.
+# max_controller_drawdown_quote stops a single controller if its drawdown from peak exceeds this.
+# max_global_drawdown_quote stops EVERYTHING if total drawdown from peak exceeds this.
+max_controller_drawdown_quote: null
+max_global_drawdown_quote: null

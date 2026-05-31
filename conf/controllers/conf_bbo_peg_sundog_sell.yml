@@ -1,0 +1,26 @@
+id: bbo_peg_sundog_htx_sell
+controller_name: bbo_peg_sell
+controller_type: market_making
+
+connector_name: htx
+trading_pair: SUNDOG-USDT
+
+# Single LIMIT_MAKER sell at external_best_ask - 1 tick. Order size = this /
+# quoted price. Requires base inventory (SUNDOG) on the account to fill.
+total_amount_quote: 11
+
+# 1.0s tick interval, matching the buy side. cancel_debounce_seconds (2.0)
+# still exceeds this so the walker dedupes ghost cancels safely.
+update_interval: 2.0
+
+# Anti-spoof gate, matching the buy side. See buy config for rationale.
+min_spread_pct: 0
+
+# Same 2.0s cancel-debounce.
+cancel_debounce_seconds: 2.0
+
+# N-shot fill latch: 10 distinct sell fills per process before this side latches.
+max_fills: 10
+
+manual_kill_switch: false
+initial_positions: []

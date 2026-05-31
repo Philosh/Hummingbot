@@ -1,0 +1,23 @@
+id: bbo_peg_ctx_htx
+controller_name: bbo_peg_buy
+controller_type: market_making
+
+connector_name: htx
+trading_pair: CTX-USDT
+
+total_amount_quote: 11
+
+update_interval: 2.0
+
+# Anti-spoof gate. On 2026-05-29 CTX showed ~40% spread on $740K 24h
+# volume, withdrawal open; gate set to 15%. SINGLE-SNAPSHOT ESTIMATE — re-tune live.
+min_spread_pct: 0.25
+
+cancel_debounce_seconds: 2.0
+max_fills: 10
+
+max_inventory_quote: 10.1
+
+manual_kill_switch: false
+initial_positions: []
+bid_depth: 2

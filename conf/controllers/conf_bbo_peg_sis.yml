@@ -1,0 +1,29 @@
+id: bbo_peg_sis_htx
+controller_name: bbo_peg_buy
+controller_type: market_making
+
+connector_name: htx
+trading_pair: SIS-USDT
+
+# Single LIMIT_MAKER buy at external_best_bid + 1 tick. $11 per side.
+total_amount_quote: 11
+
+# 3.0s tick; cancel_debounce_seconds (2.0) still exceeds it.
+update_interval: 2.0
+
+# Anti-spoof gate calibrated for SIS's ~5.2% natural spread (~60% of spread).
+# SIS = Symbiosis cross-chain DeFi. Mid-cap, less established than PYR/AUDIO.
+# WARNING: very wide spreads on smaller-cap tokens often indicate stale book
+# or low taker activity, not durable opportunity. We've seen XMN/MIRA/A8
+# collapse from 4%+ to <1% within minutes. Watch the gate log carefully;
+# if it flaps frequently or the spread closes, consider pausing.
+# Also: chunky 0.51% tick like AUDIO — bigger discrete peg jumps.
+min_spread_pct: 0.030
+
+cancel_debounce_seconds: 2.0
+max_fills: 10
+max_buy_lead: 1
+
+manual_kill_switch: false
+initial_positions: []
+bid_depth: 2

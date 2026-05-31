@@ -1,0 +1,31 @@
+id: bbo_peg_pyr_htx
+controller_name: bbo_peg_buy
+controller_type: market_making
+
+connector_name: htx
+trading_pair: PYR-USDT
+
+# Single LIMIT_MAKER buy at external_best_bid + 1 tick. $11 per side.
+total_amount_quote: 11
+
+# 3.0s tick; cancel_debounce_seconds (2.0) still exceeds it.
+update_interval: 2.0
+
+# Anti-spoof gate calibrated for PYR's ~2.3% natural spread (60% of spread).
+# PYR = Vulcan Forged gaming/NFT token. Clean 0.041% tick — XNO-analog
+# economics; spreads stable on this profile usually.
+min_spread_pct: 0.014
+
+cancel_debounce_seconds: 2.0
+max_fills: 10
+
+# Inventory-value cap: pause buys while base inventory (valued at mid) is
+# >= this, resume once a sell clears it below. Wallet-based gate that
+# replaces the count-based max_buy_lead; the sell side runs independently on
+# whatever inventory is held. Set to 10 (below the $11 order size) so a
+# single filled lot reliably pauses further buys. HTX min notional is ~$10.
+max_inventory_quote: 10
+
+manual_kill_switch: false
+initial_positions: []
+bid_depth: 2

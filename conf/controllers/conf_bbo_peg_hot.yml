@@ -1,0 +1,32 @@
+id: bbo_peg_hot_htx
+controller_name: bbo_peg_buy
+controller_type: market_making
+
+connector_name: htx
+trading_pair: HOT-USDT
+
+# Single LIMIT_MAKER buy at external_best_bid + 1 tick. $11 per side.
+total_amount_quote: 11
+
+update_interval: 2.0
+
+# Anti-spoof gate. On 2026-05-29 HOT showed ~6.3% spread on $1.13M 24h
+# volume, deposit+withdraw open; gate set to 3%. WARNING: price is ~0.00036,
+# so VERIFY the tick (min_price_increment) isn't a chunky fraction of price
+# before trusting profitability — the strategy captures (spread - 2 ticks).
+# SINGLE-SNAPSHOT ESTIMATE — re-tune live.
+min_spread_pct: 0.05
+
+cancel_debounce_seconds: 2.0
+max_fills: 10
+
+# Inventory-value cap: pause buys while base inventory (valued at mid) is
+# >= this, resume once a sell clears it below. Wallet-based gate replacing
+# count-based max_buy_lead; the sell side runs independently on held
+# inventory. 10.1 sits just below the $11 order size and just above the ~$10
+# HTX minimum.
+max_inventory_quote: 10.1
+
+manual_kill_switch: false
+initial_positions: []
+bid_depth: 2

@@ -1,0 +1,31 @@
+id: bbo_peg_audio_htx
+controller_name: bbo_peg_buy
+controller_type: market_making
+
+connector_name: htx
+trading_pair: AUDIO-USDT
+
+# Single LIMIT_MAKER buy at external_best_bid + 1 tick. $11 per side.
+total_amount_quote: 11
+
+# 3.0s tick; cancel_debounce_seconds (2.0) still exceeds it.
+update_interval: 2.0
+
+# Anti-spoof gate, lowered 0.022 → 0.014 after observing AUDIO's spread
+# compressed from 3.6% (screener snapshot) to ~1.5% live. At 0.022 the
+# gate was canceling sells within 3s of posting them and the bot was
+# silent most of the time.
+# WARNING: AUDIO has a CHUNKY 0.52% tick. At 1.4% gate, in the 1.4-2%
+# spread range, captured = spread - 1.04% (two ticks). After 0.4% fees
+# + 0.3% adverse selection, net is -0.34% to +0.26% per round-trip in
+# that range. Only when spread > 2% does the trade profit. Lowering the
+# gate trades activity for win-rate. Raise back to 0.022 if PnL goes red.
+min_spread_pct: 0.014
+
+cancel_debounce_seconds: 2.0
+max_fills: 10
+max_buy_lead: 1
+
+manual_kill_switch: false
+initial_positions: []
+bid_depth: 2

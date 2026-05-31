@@ -1,0 +1,42 @@
+id: bbo_peg_era_htx_sell
+controller_name: bbo_peg_sell
+controller_type: market_making
+
+connector_name: htx
+trading_pair: ERA-USDT
+
+# Single LIMIT_MAKER sell at external_best_ask - 1 tick (excluding our own
+# resting order). Order size = this / quoted price. Requires base inventory
+# (ERA) on the account to actually fill. Pre-flight balance guard skips the
+# Create if insufficient and logs once per insufficient<->sufficient
+# transition.
+total_amount_quote: 20
+
+# 1.0s tick interval, matching the buy side. Faster than the XNO/WAVES
+# default (2.0s) for quicker reaction. cancel_debounce_seconds (2.0)
+# still exceeds this interval so the walker continues to dedupe ghost
+# cancels through the WebSocket propagation lag.
+update_interval: 2.0
+
+# Anti-spoof gate, lowered from 0.020 to 0.015 to match the buy side
+# after observing ERA's live spread compress to 1.5-2% (see buy config
+# for full rationale). Symmetric threshold keeps buy/sell behavior
+# consistent.
+#
+# NOTE: known cross-controller interaction (carried over from XNO). The
+# gate references raw best_bid (not self-excluded), so the buy controller's
+# own quote may compress the measured spread by 1 tick. With a 1.5%
+# threshold, there's now a tighter margin before that compression matters.
+min_spread_pct: 0
+
+# Same 2.0s cancel-debounce as XNO/WAVES.
+cancel_debounce_seconds: 2.0
+
+# N-shot fill latch (see buy-side config for the rationale). Symmetric
+# with the buy side so the sell controller can also re-quote up to 10 times,
+# matching the buy-side allowance so inventory accumulated by repeated
+# buys can be cleared.
+max_fills: 10
+
+manual_kill_switch: false
+initial_positions: []

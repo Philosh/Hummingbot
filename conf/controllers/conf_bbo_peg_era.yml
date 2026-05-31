@@ -1,0 +1,51 @@
+id: bbo_peg_era_htx
+controller_name: bbo_peg_buy
+controller_type: market_making
+
+connector_name: htx
+trading_pair: ERA-USDT
+
+# Single LIMIT_MAKER buy at external_best_bid + 1 tick (excluding our own
+# resting order). Order size = this / quoted price.
+total_amount_quote: 20
+
+# Seconds between controller ticks. ERA runs at 1.0s (faster than the
+# default 2.0s used by XNO/WAVES) to react more quickly to the leapfrog
+# spoof pattern on this pair. Safe because cancel_debounce_seconds (2.0)
+# is still longer than this interval — the walker still treats just-
+# cancelled orders as ours through the WebSocket propagation lag, so the
+# self-chase loop stays defused.
+update_interval: 2.0
+
+# Anti-spoof gate, lowered from 0.020 to 0.015 after observing ERA's live
+# spread compress to 1.5-2% (vs the screener-snapshot 3.5%). The original
+# 2% threshold was flapping on/off the boundary, leaving the bot mostly
+# silent. 1.5% catches the current trading regime while still blocking
+# meaningful spread compression. Re-raise if the market widens back out;
+# lower further (toward 0.012) for more activity at the cost of less
+# spoof defense.
+min_spread_pct: 0.015
+
+# Same 2.0s cancel-debounce as XNO/WAVES — covers HTX cancel-WebSocket lag.
+cancel_debounce_seconds: 2.0
+
+# N-shot fill latch (1 = original one-shot behavior used by XNO and WAVES
+# when those run). ERA gets 10 because its wider 3.5% natural spread and
+# higher volume support sustained round-tripping. Each distinct executor
+# counts once (partial fills don't inflate the count). After 10 fills, the
+# controller stops creating new orders for the process lifetime.
+max_fills: 10
+
+# Cross-controller inventory cap. Buy is paused when (buys - sells) >= 1
+# on this trading pair (counts tracked across both bbo_peg buy and sell
+# controllers via the shared fill_tracker module). Effective behavior:
+# - Only 1 unmatched buy allowed at a time (lead=0..1).
+# - 2nd buy waits for the 1st sell fill.
+# - In general: buy N is allowed only when (filled buys - filled sells) < 1.
+# Prevents the buy side from accumulating more than ~$20 of ERA inventory
+# (1 × $20 quote) regardless of how slowly sells clear.
+max_buy_lead: 1
+
+manual_kill_switch: false
+initial_positions: []
+bid_depth: 2

@@ -1,0 +1,37 @@
+id: bbo_peg_xmn_htx
+controller_name: bbo_peg_buy
+controller_type: market_making
+
+connector_name: htx
+trading_pair: XMN-USDT
+
+# Single LIMIT_MAKER buy at external_best_bid + 1 tick. Order size = this /
+# quoted price. $11 per side to spread capital across WAVES + SUNDOG + XMN
+# + VSN.
+total_amount_quote: 11
+
+# Seconds between controller ticks. 1.0s for quicker reaction.
+# cancel_debounce_seconds (2.0) still exceeds this interval so the walker
+# continues to dedupe ghost cancels through the WebSocket propagation lag.
+update_interval: 2.0
+
+# Anti-spoof gate, calibrated for XMN's ~2.5% live natural spread.
+# Rule of thumb: gate ~60% of typical natural spread.
+# NOTE: XMN is a newer / less-known token — verify the project on HTX's
+# listing page before deploying real capital. Paper-test the gate for
+# 1-2 hours; if it flaps too often, lower toward 0.012.
+min_spread_pct: 0.015
+
+# Same 2.0s cancel-debounce — covers HTX cancel-WebSocket lag.
+cancel_debounce_seconds: 2.0
+
+# N-shot fill latch: 10 distinct fills per process before this side latches.
+max_fills: 10
+
+# Inventory cap: pause buys when (buys - sells) >= 1 on XMN-USDT, so the
+# buy side can't accumulate more than ~$11 of XMN (1 × $11 quote).
+max_buy_lead: 1
+
+manual_kill_switch: false
+initial_positions: []
+bid_depth: 2

@@ -9,7 +9,7 @@ trading_pair: SIS-USDT
 total_amount_quote: 11
 
 # 3.0s tick; cancel_debounce_seconds (2.0) still exceeds it.
-update_interval: 1.0
+update_interval: 2.0
 
 # Anti-spoof gate calibrated for SIS's ~5.2% natural spread (~60% of spread).
 # SIS = Symbiosis cross-chain DeFi. Mid-cap, less established than PYR/AUDIO.
@@ -20,7 +20,7 @@ update_interval: 1.0
 # Also: chunky 0.51% tick like AUDIO — bigger discrete peg jumps.
 min_spread_pct: 0.030
 
-cancel_debounce_seconds: 1.0
+cancel_debounce_seconds: 2.0
 max_fills: 10
 max_buy_lead: 1
 

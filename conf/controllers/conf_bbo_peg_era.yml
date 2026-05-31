@@ -15,7 +15,7 @@ total_amount_quote: 20
 # is still longer than this interval — the walker still treats just-
 # cancelled orders as ours through the WebSocket propagation lag, so the
 # self-chase loop stays defused.
-update_interval: 1.0
+update_interval: 2.0
 
 # Anti-spoof gate, lowered from 0.020 to 0.015 after observing ERA's live
 # spread compress to 1.5-2% (vs the screener-snapshot 3.5%). The original
@@ -27,7 +27,7 @@ update_interval: 1.0
 min_spread_pct: 0.015
 
 # Same 2.0s cancel-debounce as XNO/WAVES — covers HTX cancel-WebSocket lag.
-cancel_debounce_seconds: 1.0
+cancel_debounce_seconds: 2.0
 
 # N-shot fill latch (1 = original one-shot behavior used by XNO and WAVES
 # when those run). ERA gets 10 because its wider 3.5% natural spread and

@@ -9,7 +9,7 @@ trading_pair: AUDIO-USDT
 total_amount_quote: 11
 
 # 3.0s tick; cancel_debounce_seconds (2.0) still exceeds it.
-update_interval: 1.0
+update_interval: 2.0
 
 # Anti-spoof gate, lowered 0.022 → 0.014 after observing AUDIO's spread
 # compressed from 3.6% (screener snapshot) to ~1.5% live. At 0.022 the
@@ -22,7 +22,7 @@ update_interval: 1.0
 # gate trades activity for win-rate. Raise back to 0.022 if PnL goes red.
 min_spread_pct: 0.014
 
-cancel_debounce_seconds: 1.0
+cancel_debounce_seconds: 2.0
 max_fills: 10
 max_buy_lead: 1
 

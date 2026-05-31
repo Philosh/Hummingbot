@@ -12,7 +12,7 @@ total_amount_quote: 11
 # Seconds between controller ticks. 1.0s for quicker reaction.
 # cancel_debounce_seconds (2.0) still exceeds this interval so the walker
 # continues to dedupe ghost cancels through the WebSocket propagation lag.
-update_interval: 1.0
+update_interval: 2.0
 
 # Anti-spoof gate, calibrated for BLUE's ~4.3% live natural spread.
 # Rule of thumb: gate ~60-65% of typical natural spread.
@@ -24,7 +24,7 @@ update_interval: 1.0
 min_spread_pct: 0.025
 
 # Same 2.0s cancel-debounce — covers HTX cancel-WebSocket lag.
-cancel_debounce_seconds: 1.0
+cancel_debounce_seconds: 2.0
 
 # N-shot fill latch: 10 distinct fills per process before this side latches.
 max_fills: 10

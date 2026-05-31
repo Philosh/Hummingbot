@@ -9,7 +9,7 @@ trading_pair: FLOW-USDT
 total_amount_quote: 11
 
 # 3.0s tick.
-update_interval: 1.0
+update_interval: 2.0
 
 # Anti-spoof gate for FLOW (~8% live spread, but earlier observed 2.5%).
 # FLOW = Flow blockchain (NBA Top Shot, CryptoKitties).
@@ -20,7 +20,7 @@ update_interval: 1.0
 # any taker hits them. Don't expect frequent fills.
 min_spread_pct: 0.05
 
-cancel_debounce_seconds: 1.0
+cancel_debounce_seconds: 2.0
 max_fills: 10
 
 # Inventory-value cap: pause buys while base inventory (valued at mid) is

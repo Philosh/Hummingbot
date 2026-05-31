@@ -16,7 +16,7 @@ total_amount_quote: 20
 # default (2.0s) for quicker reaction. cancel_debounce_seconds (2.0)
 # still exceeds this interval so the walker continues to dedupe ghost
 # cancels through the WebSocket propagation lag.
-update_interval: 1.0
+update_interval: 2.0
 
 # Anti-spoof gate, lowered from 0.020 to 0.015 to match the buy side
 # after observing ERA's live spread compress to 1.5-2% (see buy config
@@ -30,7 +30,7 @@ update_interval: 1.0
 min_spread_pct: 0
 
 # Same 2.0s cancel-debounce as XNO/WAVES.
-cancel_debounce_seconds: 1.0
+cancel_debounce_seconds: 2.0
 
 # N-shot fill latch (see buy-side config for the rationale). Symmetric
 # with the buy side so the sell controller can also re-quote up to 10 times,

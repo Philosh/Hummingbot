@@ -10,7 +10,7 @@ trading_pair: PING-USDT
 total_amount_quote: 11
 
 # 1.0s tick interval; cancel_debounce_seconds (2.0) still exceeds it.
-update_interval: 1.0
+update_interval: 2.0
 
 # Anti-spoof gate, calibrated for PING's ~4.4% live natural spread.
 # Rule of thumb: gate ~60% of typical natural spread.
@@ -18,7 +18,7 @@ update_interval: 1.0
 # page before scaling capital. Watch the gate logs for flapping.
 min_spread_pct: 0.026
 
-cancel_debounce_seconds: 1.0
+cancel_debounce_seconds: 2.0
 max_fills: 10
 max_buy_lead: 1
 

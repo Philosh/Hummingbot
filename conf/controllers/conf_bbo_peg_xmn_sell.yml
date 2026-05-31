@@ -11,13 +11,13 @@ total_amount_quote: 11
 
 # 1.0s tick interval, matching the buy side. cancel_debounce_seconds (2.0)
 # still exceeds this so the walker dedupes ghost cancels safely.
-update_interval: 1.0
+update_interval: 2.0
 
 # Anti-spoof gate, matching the buy side. See buy config for rationale.
 min_spread_pct: 0
 
 # Same 2.0s cancel-debounce.
-cancel_debounce_seconds: 1.0
+cancel_debounce_seconds: 2.0
 
 # N-shot fill latch: 10 distinct sell fills per process before this side latches.
 max_fills: 10

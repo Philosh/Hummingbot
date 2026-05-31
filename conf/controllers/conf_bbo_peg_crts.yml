@@ -9,7 +9,7 @@ trading_pair: CRTS-USDT
 total_amount_quote: 11
 
 # 3.0s tick.
-update_interval: 1.0
+update_interval: 2.0
 
 # Anti-spoof gate for CRTS (~1.8% live spread, 60% rule → ~1.1%).
 # CRTS = Cratos (decentralized data/research platform).
@@ -18,7 +18,7 @@ update_interval: 1.0
 # WARNING: 24h volume only $181k — quotes may take time to fill.
 min_spread_pct: 0.011
 
-cancel_debounce_seconds: 1.0
+cancel_debounce_seconds: 2.0
 max_fills: 10
 
 # Inventory-value cap: pause buys while base inventory (valued at mid) is
